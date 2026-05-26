@@ -1,0 +1,9 @@
+*.log
+*.pid
+*.bak
+*.backup
+*.backup-*
+*.tmp
+node_modules/
+dist/
+
