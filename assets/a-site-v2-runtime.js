@@ -2080,6 +2080,55 @@
     } catch (_) {}
   }
 
+  function isSupportedCharacterDirectiveFile(file){
+    if (!file) return false;
+    var name = String(file.name || "").toLowerCase();
+    var type = String(file.type || "").toLowerCase();
+    if (/\.(txt|md|markdown|json|csv|log|yaml|yml)$/i.test(name)) return true;
+    return type.indexOf("text/") === 0 || type.indexOf("json") >= 0 || type.indexOf("yaml") >= 0 || type.indexOf("csv") >= 0;
+  }
+
+  function importCharacterDirectiveFile(file, textarea){
+    if (!file || !textarea) return;
+    var fileName = String(file.name || "uploaded-document");
+    var lowerName = fileName.toLowerCase();
+    if (/\.(pdf|docx|doc)$/i.test(lowerName)) {
+      showToast("暂不直接解析 PDF / Word 文档。请先另存为 txt / md / json 后再导入。", "warn");
+      return;
+    }
+    if (!isSupportedCharacterDirectiveFile(file)) {
+      showToast("当前仅支持 txt / md / json / csv / yaml 等纯文本类文档。", "warn");
+      return;
+    }
+    var maxBytes = 1024 * 1024;
+    if (file.size && file.size > maxBytes) {
+      showToast("文档超过 1MB。请先精简为角色设定相关片段再导入。", "warn");
+      return;
+    }
+    var reader = new FileReader();
+    reader.onerror = function(){
+      showToast("读取文档失败，请确认文件可访问。", "warn");
+    };
+    reader.onload = function(){
+      var raw = trimText(reader.result || "");
+      if (!raw) {
+        showToast("文档内容为空，未导入。", "warn");
+        return;
+      }
+      var maxChars = 30000;
+      var wasTruncated = raw.length > maxChars;
+      var body = wasTruncated ? raw.slice(0, maxChars) : raw;
+      var current = trimText(textarea.value || "");
+      var imported = "【导入文档：" + fileName + "】\n" + body;
+      var next = current ? current + "\n\n" + imported : imported;
+      textarea.value = next;
+      writeCharacterGenerationDirective(next);
+      try { textarea.dispatchEvent(new Event("input", {bubbles:true})); } catch (_) {}
+      showToast("已导入人设生成文档" + (wasTruncated ? "（已截取前 30000 字符）" : "") + "。");
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
   function findCharacterConceptField(){
     if (typeof document === "undefined" || !document.body) return null;
     var selectors = [
@@ -7579,11 +7628,11 @@
     var acceptButton = findButtonByText(["接受命运并成长", "接受结果并继续"]);
     if (acceptButton) return {element: findCompactContainer(acceptButton), position: "before", hideLegacy: null};
     var fateButton = findButtonByText("消耗2点激励干涉命运");
-    if (fateButton) return {element: findCompactContainer(fateButton), position: "before", hideLegacy: null};
+    if (fateButton) return {element: findCompactContainer(fateButton), position: "after", hideLegacy: null};
     var consoleButton = findButtonByText("打开调试控制台");
-    if (consoleButton) return {element: findCompactContainer(consoleButton), position: "before", hideLegacy: null};
+    if (consoleButton) return {element: findCompactContainer(consoleButton), position: "after", hideLegacy: null};
     var storyAnchor = findStoryFlowAnchor();
-    if (storyAnchor) return {element: storyAnchor, position: "before", hideLegacy: null};
+    if (storyAnchor) return {element: storyAnchor, position: "after", hideLegacy: null};
     return null;
   }
 
@@ -7598,25 +7647,50 @@
     }
   }
 
-  function triggerNativeFateIntervention(){
-    var button = findButtonByText(["消耗2点激励干涉命运", "干涉命运", "命运干涉"]);
-    if (!button || !isElementActuallyVisible(button)) return false;
-    if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
-    try {
-      button.click();
-      return true;
-    } catch (error) {
-      console.warn("[A-Site V2] native fate intervention click failed:", error);
-      return false;
+  function buildFateInterventionTimeContext(profile, modeLabel){
+    var normalized = normalizePlayer(profile || {});
+    var existing = normalized.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext();
+    if (existing && existing.newDate) {
+      var cloned = clonePlain(existing);
+      cloned.source = cloned.source || "v2_fate_intervention";
+      cloned.fateInterventionMode = modeLabel || "";
+      cloned.createdAt = new Date().toISOString();
+      return cloned;
     }
+    var dateText = normalized.calendarState && normalized.calendarState.currentDate || "";
+    return {
+      mode: "current_scene",
+      oldDate: dateText,
+      newDate: dateText,
+      days: 0,
+      targetYearText: normalized.currentYear || "",
+      targetAgeText: normalized.age || "",
+      totalDaysBefore: Number(normalized.totalDays) || 0,
+      totalDaysAfter: Number(normalized.totalDays) || 0,
+      generationMode: getOpenNarrativeChain(normalized) ? "chain_continue" : "standalone_event",
+      source: "v2_fate_intervention",
+      fateInterventionMode: modeLabel || "",
+      createdAt: new Date().toISOString()
+    };
   }
 
-  async function applyFallbackFateIntervention(){
+  function isNativeFateInterventionButton(button){
+    if (!button || isInsideASiteV2Ui(button)) return false;
+    var text = trimText(button.innerText || button.textContent);
+    if (!text) return false;
+    if (text.indexOf("逆天改命") >= 0 || text.indexOf("重掷") >= 0 || text.indexOf("重随") >= 0) return false;
+    return text.indexOf("消耗2点激励干涉命运") >= 0 ||
+      text.indexOf("干涉命运") >= 0 ||
+      text === "命运干涉";
+  }
+
+  async function applyV2FateIntervention(){
     var text = window.prompt("命运干涉：输入下一轮希望靠近的主题、目标、场景、人物或事件方向。");
     text = trimText(text);
     if (!text) return;
-    var direct = window.confirm("是否强制构建命运？\n确定 = 强构建；取消 = 轻微干预。");
-    await mutateInlineProfile(function(profile){
+    var direct = window.confirm("选择命运干涉方式：\n确定 = 确立命运：硬性注入完整指令。\n取消 = 构建命运：交给 PLANNER 抽取关键词并生成事件。");
+    var modeLabel = direct ? "establish_fate_direct" : "build_fate_planned";
+    var saved = await mutateInlineProfile(function(profile){
       var next = normalizePlayer(profile || {});
       var points = Math.max(0, Math.floor(Number(next.inspirationPoints) || 0));
       if (points < 2) {
@@ -7626,13 +7700,41 @@
       next.inspirationPoints = points - 2;
       next.customNextTheme = text;
       next.customNextThemeMode = direct ? "direct" : "soft";
+      var timeContext = buildFateInterventionTimeContext(next, modeLabel);
+      lastInlineTimeJumpContext = clonePlain(timeContext);
+      next.pendingInlineTimeJumpContext = clonePlain(timeContext);
+      next.sceneControl = normalizeSceneControl(Object.assign({}, next.sceneControl || {}, {
+        sceneEndReason: Number(timeContext.days || 0) > 0 ? "time_jump_requested" : "user_requested_zoom_out",
+        generationMode: timeContext.generationMode || (getOpenNarrativeChain(next) ? "chain_continue" : "standalone_event")
+      }), next.immersionSettings, next.sceneState);
+      next.immersionSettings = normalizeImmersionSettings(Object.assign({}, next.immersionSettings || {}, next.sceneControl));
+      next.nextGranularitySuggestions = next.sceneControl.suggestedNextGranularities;
       return normalizePlayer(next);
-    }, direct ? "命运已被构建。下一轮事件会优先承接该指令。" : "命运已被轻微干预。下一轮事件会参考该指令。");
+    }, direct ? "命运已被确立，正在接入 V2 推进。" : "命运已被构建，正在接入 V2 推进。");
+    if (saved) {
+      startNativeEventFromV2TimeJump(0, saved, {clearCurrentEvent:true});
+    }
   }
 
   async function handleInlineFateIntervention(){
-    if (triggerNativeFateIntervention()) return;
-    await applyFallbackFateIntervention();
+    await applyV2FateIntervention();
+  }
+
+  function handleNativeFateInterventionCapture(event){
+    var button = event.target && event.target.closest && event.target.closest("button");
+    if (!isNativeFateInterventionButton(button)) return;
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    if (fateInterventionCaptureInProgress) return;
+    fateInterventionCaptureInProgress = true;
+    handleInlineFateIntervention().catch(function(error){
+      console.error("[A-Site V2] fate intervention bridge failed:", error);
+      showToast("V2 命运干涉启动失败：" + (error && error.message || error), "warn");
+    }).finally(function(){
+      fateInterventionCaptureInProgress = false;
+    });
   }
 
   function installCharacterGenerationDirectiveField(){
@@ -7652,6 +7754,7 @@
     wrap.innerHTML = [
       '<label for="asv2-character-generation-directive"><b>人设生成指令</b></label>',
       '<textarea id="asv2-character-generation-directive" rows="3" placeholder="更硬性的角色生成约束：必须保留的姓名、身份、关系、身体/心理状态、属性倾向、初始NPC、目标或开局事件。"></textarea>',
+      '<div class="asv2-mini-actions"><button type="button" id="asv2-character-generation-directive-upload">上传文本/Markdown/JSON</button><input id="asv2-character-generation-directive-file" type="file" accept=".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,text/plain,text/markdown,application/json,text/csv" style="display:none"></div>',
       '<small>该内容会在 BIOGRAPHER 角色生成请求中作为 V2 硬注入；不是普通备注。</small>'
     ].join("");
     host.parentElement.insertBefore(wrap, host.nextSibling);
@@ -7662,6 +7765,18 @@
         writeCharacterGenerationDirective(textarea.value);
       });
     }
+    var uploadButton = wrap.querySelector("#asv2-character-generation-directive-upload");
+    var fileInput = wrap.querySelector("#asv2-character-generation-directive-file");
+    if (uploadButton && fileInput && textarea) {
+      uploadButton.addEventListener("click", function(){
+        fileInput.value = "";
+        fileInput.click();
+      });
+      fileInput.addEventListener("change", function(){
+        var file = fileInput.files && fileInput.files[0];
+        importCharacterDirectiveFile(file, textarea);
+      });
+    }
   }
 
   var inlineControlsInstalled = false;
@@ -7669,6 +7784,7 @@
   var inlineMissingAnchorWarned = false;
   var inlineProfileSyncInProgress = false;
   var legacyAcceptCaptureInProgress = false;
+  var fateInterventionCaptureInProgress = false;
   var lastInlineTimeJumpContext = null;
 
   function syncFloatingDebugButtonVisibility(hasInlineControl){
@@ -7826,6 +7942,7 @@
     wrapper.innerHTML = renderInlineImmersionControls(profile);
     var nextNode = wrapper.firstElementChild;
     if (existing) existing.replaceWith(nextNode);
+    else if (ref.position === "after") ref.element.parentElement.insertBefore(nextNode, ref.element.nextSibling);
     else ref.element.parentElement.insertBefore(nextNode, ref.element);
     syncFloatingDebugButtonVisibility(true);
     var detail = document.getElementById("asv2-inline-detail-level");
@@ -8473,6 +8590,7 @@
     inlineControlsInstalled = true;
     document.addEventListener("click", handleNativeCopyButtonCapture, true);
     document.addEventListener("click", handleRerollThemeButtonCapture, true);
+    document.addEventListener("click", handleNativeFateInterventionCapture, true);
     document.addEventListener("click", handleLegacyAcceptButtonCapture, true);
     document.addEventListener("click", handleInlineControlClick);
     document.addEventListener("change", handleInlineControlChange);
