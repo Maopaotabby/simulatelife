@@ -8220,16 +8220,8 @@
     var action = target.getAttribute("data-asv2-inline-action");
     if (target.disabled || target.getAttribute("aria-disabled") === "true") {
       event.preventDefault();
-      showToast("请先处理本次写入确认，再继续推进。", "warn");
+      showToast("当前操作暂不可用。", "warn");
       return;
-    }
-    if (action === "granularity" || action === "time-jump" || action === "leave-scene" || action === "fate-intervention" || action === "chain-start" || action === "chain-continue" || action === "chain-close" || action === "chain-cancel" || action === "chain-keep-draft") {
-      var guardProfile = await getActiveProfile().catch(function(){ return null; });
-      if (guardProfile && getInlinePendingConfirmation(normalizePlayer(guardProfile))) {
-        event.preventDefault();
-        showToast("请先处理本次写入确认，再继续推进。", "warn");
-        return;
-      }
     }
     if (action === "chain-start") {
       await mutateInlineProfile(function(profile){
