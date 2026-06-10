@@ -7579,11 +7579,11 @@
     var acceptButton = findButtonByText(["接受命运并成长", "接受结果并继续"]);
     if (acceptButton) return {element: findCompactContainer(acceptButton), position: "before", hideLegacy: null};
     var fateButton = findButtonByText("消耗2点激励干涉命运");
-    if (fateButton) return {element: findCompactContainer(fateButton), position: "before", hideLegacy: null};
+    if (fateButton) return {element: findCompactContainer(fateButton), position: "after", hideLegacy: null};
     var consoleButton = findButtonByText("打开调试控制台");
-    if (consoleButton) return {element: findCompactContainer(consoleButton), position: "before", hideLegacy: null};
+    if (consoleButton) return {element: findCompactContainer(consoleButton), position: "after", hideLegacy: null};
     var storyAnchor = findStoryFlowAnchor();
-    if (storyAnchor) return {element: storyAnchor, position: "before", hideLegacy: null};
+    if (storyAnchor) return {element: storyAnchor, position: "after", hideLegacy: null};
     return null;
   }
 
@@ -7600,7 +7600,7 @@
 
   function triggerNativeFateIntervention(){
     var button = findButtonByText(["消耗2点激励干涉命运", "干涉命运", "命运干涉"]);
-    if (!button || !isElementActuallyVisible(button)) return false;
+    if (!button) return false;
     if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
     try {
       button.click();
@@ -7611,28 +7611,118 @@
     }
   }
 
-  async function applyFallbackFateIntervention(){
-    var text = window.prompt("命运干涉：输入下一轮希望靠近的主题、目标、场景、人物或事件方向。");
-    text = trimText(text);
-    if (!text) return;
-    var direct = window.confirm("是否强制构建命运？\n确定 = 强构建；取消 = 轻微干预。");
-    await mutateInlineProfile(function(profile){
-      var next = normalizePlayer(profile || {});
-      var points = Math.max(0, Math.floor(Number(next.inspirationPoints) || 0));
-      if (points < 2) {
-        showToast("激励点不足，无法干涉命运。", "warn");
-        return Object.assign(next, {__asv2AbortSave:true});
-      }
-      next.inspirationPoints = points - 2;
-      next.customNextTheme = text;
-      next.customNextThemeMode = direct ? "direct" : "soft";
-      return normalizePlayer(next);
-    }, direct ? "命运已被构建。下一轮事件会优先承接该指令。" : "命运已被轻微干预。下一轮事件会参考该指令。");
-  }
-
   async function handleInlineFateIntervention(){
     if (triggerNativeFateIntervention()) return;
-    await applyFallbackFateIntervention();
+    showToast("未找到原生命运干涉入口；请确认当前阶段允许命运干涉。", "warn");
+  }
+
+  function delay(ms){
+    return new Promise(function(resolve){ window.setTimeout(resolve, ms); });
+  }
+
+  function getNativeFateButtonMode(button){
+    var text = trimText(button && (button.innerText || button.textContent));
+    if (text === "确立命运") return "direct";
+    if (text === "构建命运") return "soft";
+    return "";
+  }
+
+  function isNativeFateSubmitButton(button){
+    if (!button || isInsideASiteV2Ui(button)) return false;
+    var mode = getNativeFateButtonMode(button);
+    if (!mode) return false;
+    var host = button.closest && button.closest(".ui-overlay, .ui-modal-shell, [role='dialog'], .fixed");
+    var text = trimText(host && (host.innerText || host.textContent));
+    return text.indexOf("命运") >= 0 && (text.indexOf("构建命运") >= 0 || text.indexOf("确立命运") >= 0);
+  }
+
+  async function waitForNativeFateProfile(expectedMode, beforeState){
+    var beforeTheme = trimText(beforeState && beforeState.theme);
+    var beforeMode = trimText(beforeState && beforeState.mode);
+    var beforePoints = Number(beforeState && beforeState.points);
+    for (var i = 0; i < 14; i += 1) {
+      var candidates = [];
+      var bridgeProfile = getReactBridgeProfile();
+      if (bridgeProfile) candidates.push(bridgeProfile);
+      var activeProfile = await getActiveProfile().catch(function(){ return null; });
+      if (activeProfile) candidates.push(activeProfile);
+      for (var j = 0; j < candidates.length; j += 1) {
+        var profile = normalizePlayer(candidates[j]);
+        var theme = trimText(profile.customNextTheme);
+        var mode = trimText(profile.customNextThemeMode || "soft");
+        var points = Number(profile.inspirationPoints);
+        var changed = theme && (theme !== beforeTheme || mode !== beforeMode || (Number.isFinite(beforePoints) && Number.isFinite(points) && points < beforePoints));
+        if (changed && (!expectedMode || mode === expectedMode || i > 5)) return profile;
+      }
+      await delay(80);
+    }
+    return null;
+  }
+
+  async function bridgeNativeFateInterventionToV2(expectedMode, beforeState){
+    if (fateV2BridgeInProgress) return;
+    fateV2BridgeInProgress = true;
+    try {
+      var profile = await waitForNativeFateProfile(expectedMode, beforeState);
+      if (!profile) {
+        showToast("命运干涉已提交，但尚未检测到可推进的命运指令。", "warn");
+        return;
+      }
+      var normalized = normalizePlayer(profile);
+      var openChain = getOpenNarrativeChain(normalized);
+      if (openChain && openChain.status === "open") {
+        var marked = markNarrativeChainClosureRequired(normalized, {
+          mode: "fate_intervention",
+          days: 0,
+          reason: "fate_intervention_requires_chain_closure"
+        });
+        marked.customNextTheme = trimText(normalized.customNextTheme);
+        marked.customNextThemeMode = trimText(normalized.customNextThemeMode || expectedMode || "soft");
+        var savedChain = await saveProfile(marked);
+        if (savedChain && !savedChain.__asv2AbortSave) {
+          syncReactBridgeProfile(savedChain);
+          await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] fate bridge chain render failed:", error); });
+        }
+        showToast("命运干涉已记录；当前事件链需先收束或取消。");
+        return;
+      }
+      var next = applyInlineTimeJump(normalized, "current_scene", 0);
+      next.customNextTheme = trimText(normalized.customNextTheme);
+      next.customNextThemeMode = trimText(normalized.customNextThemeMode || expectedMode || "soft");
+      next.pendingInlineTimeJumpContext = Object.assign({}, next.pendingInlineTimeJumpContext || {}, {
+        fateIntervention: true,
+        customThemeMode: next.customNextThemeMode,
+        customThemePreview: trimText(next.customNextTheme).slice(0, 80)
+      });
+      lastInlineTimeJumpContext = clonePlain(next.pendingInlineTimeJumpContext);
+      var saved = await saveProfile(next);
+      if (!saved || saved.__asv2AbortSave) return;
+      syncReactBridgeProfile(saved, {clearCurrentEvent:true});
+      await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] fate bridge inline render failed:", error); });
+      startNativeEventFromV2TimeJump(0, saved, {clearCurrentEvent:true});
+      showToast("命运干涉已接入 V2 事件推进。");
+    } catch (error) {
+      console.warn("[A-Site V2] fate intervention V2 bridge failed:", error);
+      showToast("命运干涉接入 V2 推进失败：" + (error && error.message || error), "warn");
+    } finally {
+      window.setTimeout(function(){ fateV2BridgeInProgress = false; }, 900);
+    }
+  }
+
+  function handleNativeFateSubmitCapture(event){
+    var button = event.target && event.target.closest && event.target.closest("button");
+    if (!isNativeFateSubmitButton(button)) return;
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
+    var profile = getReactBridgeProfile();
+    var beforeState = profile ? {
+      theme: profile.customNextTheme,
+      mode: profile.customNextThemeMode,
+      points: profile.inspirationPoints
+    } : {};
+    var mode = getNativeFateButtonMode(button);
+    window.setTimeout(function(){
+      bridgeNativeFateInterventionToV2(mode, beforeState);
+    }, 0);
   }
 
   function installCharacterGenerationDirectiveField(){
@@ -7670,11 +7760,38 @@
   var inlineProfileSyncInProgress = false;
   var legacyAcceptCaptureInProgress = false;
   var lastInlineTimeJumpContext = null;
+  var fateV2BridgeInProgress = false;
 
   function syncFloatingDebugButtonVisibility(hasInlineControl){
     var button = document.getElementById("a-site-v2-button");
     if (!button) return;
     button.style.display = hasInlineControl ? "none" : "block";
+  }
+
+  function legacyFateTriggerButtons(){
+    if (typeof document === "undefined" || !document.body) return [];
+    return Array.prototype.slice.call(document.body.querySelectorAll("button")).filter(function(button){
+      if (isInsideASiteV2Ui(button)) return false;
+      var text = trimText(button.innerText || button.textContent);
+      return text.indexOf("消耗2点激励干涉命运") >= 0;
+    });
+  }
+
+  function syncLegacyFateTriggerVisibility(hasInlineControl){
+    legacyFateTriggerButtons().forEach(function(button){
+      var buttonText = trimText(button.innerText || button.textContent);
+      var host = button.parentElement;
+      var target = host && trimText(host.innerText || host.textContent) === buttonText ? host : button;
+      if (hasInlineControl) {
+        if (!target.getAttribute("data-asv2-prev-display")) target.setAttribute("data-asv2-prev-display", target.style.display || "");
+        target.style.display = "none";
+        target.setAttribute("data-asv2-hidden-legacy-fate", "true");
+      } else if (target.getAttribute("data-asv2-hidden-legacy-fate") === "true") {
+        target.style.display = target.getAttribute("data-asv2-prev-display") || "";
+        target.removeAttribute("data-asv2-prev-display");
+        target.removeAttribute("data-asv2-hidden-legacy-fate");
+      }
+    });
   }
 
   function documentHasVisibleInlineChoicePollution(){
@@ -7815,6 +7932,7 @@
     if (!ref || !ref.element || !ref.element.parentElement) {
       if (existing) existing.remove();
       syncFloatingDebugButtonVisibility(false);
+      syncLegacyFateTriggerVisibility(false);
       if (!inlineMissingAnchorWarned) {
         inlineMissingAnchorWarned = true;
         console.warn("[A-Site V2] 主界面沉浸控制条未找到稳定挂载点，已跳过插入。");
@@ -7826,8 +7944,10 @@
     wrapper.innerHTML = renderInlineImmersionControls(profile);
     var nextNode = wrapper.firstElementChild;
     if (existing) existing.replaceWith(nextNode);
+    else if (ref.position === "after") ref.element.parentElement.insertBefore(nextNode, ref.element.nextSibling);
     else ref.element.parentElement.insertBefore(nextNode, ref.element);
     syncFloatingDebugButtonVisibility(true);
+    syncLegacyFateTriggerVisibility(true);
     var detail = document.getElementById("asv2-inline-detail-level");
     if (detail && profile) detail.value = normalizeSceneControl(profile.sceneControl, profile.immersionSettings, profile.sceneState).detailLevel || "standard";
   }
@@ -8474,6 +8594,7 @@
     document.addEventListener("click", handleNativeCopyButtonCapture, true);
     document.addEventListener("click", handleRerollThemeButtonCapture, true);
     document.addEventListener("click", handleLegacyAcceptButtonCapture, true);
+    document.addEventListener("click", handleNativeFateSubmitCapture, true);
     document.addEventListener("click", handleInlineControlClick);
     document.addEventListener("change", handleInlineControlChange);
     scheduleInlineControlsRender();
