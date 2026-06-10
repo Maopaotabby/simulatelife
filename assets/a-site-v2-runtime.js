@@ -8,6 +8,7 @@
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
+  var CHARACTER_GENERATION_DIRECTIVE_KEY = "a_site_v2_character_generation_directive";
   var GUARDRAILS_START = "<!-- A_SITE_V2_GUARDRAILS_START -->";
   var GUARDRAILS_END = "<!-- A_SITE_V2_GUARDRAILS_END -->";
   var AGENT_CONTRACT_START = "<!-- A_SITE_V2_AGENT_CONTRACT_START -->";
@@ -2061,6 +2062,91 @@
     return core.concat(coverage).join("\n");
   }
 
+  function isCharacterGenerationAgent(agentName){
+    return trimText(agentName || "").toUpperCase() === "BIOGRAPHER";
+  }
+
+  function readCharacterGenerationDirective(){
+    try {
+      return trimText(localStorage.getItem(CHARACTER_GENERATION_DIRECTIVE_KEY) || "");
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function writeCharacterGenerationDirective(value){
+    try {
+      localStorage.setItem(CHARACTER_GENERATION_DIRECTIVE_KEY, trimText(value));
+    } catch (_) {}
+  }
+
+  function findCharacterConceptField(){
+    if (typeof document === "undefined" || !document.body) return null;
+    var selectors = [
+      'textarea[placeholder*="落魄贵族"]',
+      'input[placeholder*="落魄贵族"]',
+      'textarea[placeholder*="天才黑客"]',
+      'input[placeholder*="天才黑客"]',
+      'textarea[placeholder*="时代的局外人"]',
+      'input[placeholder*="时代的局外人"]'
+    ];
+    for (var i = 0; i < selectors.length; i += 1) {
+      var found = document.querySelector(selectors[i]);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function readCharacterConceptFromDom(){
+    var field = findCharacterConceptField();
+    return field ? trimText(field.value) : "";
+  }
+
+  function extractCharacterConceptFromPrompt(text){
+    var value = String(text || "");
+    var patterns = [
+      /玩家指定了角色的核心概念为[：:]\s*[“"]([\s\S]{1,1600}?)[”"]/,
+      /玩家自定义人设指令[\s\S]{0,220}?核心概念为[：:]\s*[“"]([\s\S]{1,1600}?)[”"]/,
+      /必须符合玩家自定义的人设[\s\S]{0,220}?玩家指定了角色的核心概念为[：:]\s*[“"]([\s\S]{1,1600}?)[”"]/
+    ];
+    for (var i = 0; i < patterns.length; i += 1) {
+      var match = value.match(patterns[i]);
+      if (match && trimText(match[1])) return trimText(match[1]);
+    }
+    return "";
+  }
+
+  function buildCharacterGenerationHardDirectiveBlock(requestText){
+    var concept = trimText(extractCharacterConceptFromPrompt(requestText) || readCharacterConceptFromDom());
+    var generationDirective = readCharacterGenerationDirective();
+    var lines = [
+      GUARDRAILS_START,
+      "[A_SITE_V2_CHARACTER_GENERATION_HARD_DIRECTIVE]",
+      buildPrivateFictionBaselineBlock("BIOGRAPHER"),
+      "",
+      "priority = 本块是角色生成层硬注入，优先级高于随机社会地位补全、模型自行润色和泛化概括；不得把玩家输入稀释成普通 trope。"
+    ];
+    if (concept) {
+      lines.push("character_concept_directive = " + concept);
+      lines.push("concept_rule = “人设引导指令”是玩家对角色核心身份、经历、欲望、限制、关系、身体/社会处境、时代位置或叙事方向的硬约束。BIOGRAPHER 必须保留其中的具体名词、数字、关系、禁忌、矛盾、职业/阶层、时代锚点和人物阴影；不得只转述成模糊背景。");
+    }
+    if (generationDirective) {
+      lines.push("character_generation_directive = " + generationDirective);
+      lines.push("generation_rule = “人设生成指令”用于直接约束本次 BIOGRAPHER 生成方式：若其中指定姓名、性别、年龄、出生、家庭、社会身份、身体状态、目标、关系网、NPC、属性倾向、标签或开局事件，必须优先落实到 JSON 字段与 background 中。");
+    }
+    if (!concept && !generationDirective) {
+      lines.push("character_directive_state = 玩家本轮未填写额外人设引导/生成指令；仍必须按世界设定、年龄、性别和社会地位生成具体、可落地、不可泛化成空壳的角色。");
+    }
+    lines = lines.concat([
+      "field_mapping_rule = 能写入结构字段的内容必须写入结构字段：name/gender/birthYear/currentYear/background/attributes/backgroundTags/talentQuestions/initialNPCs/goals。不要只把关键设定藏在 background 里。",
+      "uncertainty_rule = 若玩家指令与世界信息存在未决空白，保留不确定性并做最小合理补全；不得用随机身份覆盖玩家明确给出的核心设定。",
+      "age_rule = 若当前初始年龄很小，而玩家指令描述成年特征，应转为早期潜质、家庭预兆、环境安排、长期命运或未来倾向；不得因此删除玩家给出的核心设定。",
+      "format_rule = 仍只返回原任务要求的有效 JSON，不要解释本硬注入，不要输出 markdown。",
+      GUARDRAILS_END
+    ]);
+    return lines.join("\n");
+  }
+
   function buildContextForAgent(player, agentName, eventContext){
     var normalized = normalizePlayer(player || {});
     var layers = normalized.knowledgeLayers || {};
@@ -2934,6 +3020,7 @@
           hasWorldPublic: normalized.hasWorldPublic,
           hasNpcCard: normalized.hasNpcCard,
           hasPrivateFictionBaseline: normalized.hasPrivateFictionBaseline,
+          hasCharacterGenerationDirective: normalized.hasCharacterGenerationDirective,
           privateFictionMode: normalized.privateFictionMode,
           hasPostAcceptMarker: normalized.hasPostAcceptMarker,
           hasExtractionSchema: normalized.hasExtractionSchema,
@@ -2973,6 +3060,7 @@
               hasNpcBelief: normalized.hasNpcBelief === true,
               hasNpcCard: normalized.hasNpcCard === true,
               hasPrivateFictionBaseline: normalized.hasPrivateFictionBaseline === true,
+              hasCharacterGenerationDirective: normalized.hasCharacterGenerationDirective === true,
               privateFictionMode: normalized.privateFictionMode || "",
               hasPostAcceptMarker: normalized.hasPostAcceptMarker === true,
               hasExtractionSchema: normalized.hasExtractionSchema === true,
@@ -3005,6 +3093,7 @@
     return {
       hasMainContext: value.indexOf("[A_SITE_V2_MAIN_AGENT_CONTEXT]") >= 0,
       hasPrivateFictionBaseline: value.indexOf("[PRIVATE_FICTION_BASELINE]") >= 0,
+      hasCharacterGenerationDirective: value.indexOf("[A_SITE_V2_CHARACTER_GENERATION_HARD_DIRECTIVE]") >= 0,
       privateFictionMode: privateFictionModeMatch && privateFictionModeMatch[1] || "",
       hasScenePolicy: value.indexOf("[SCENE_POLICY]") >= 0,
       hasSceneFrame: value.indexOf("[SCENE_FRAME]") >= 0,
@@ -3169,6 +3258,8 @@
     // Identify the primary task first. Some original prompts mention the whole
     // agent pipeline, including STORYTELLER_DATA / ARCHIVIST schemas. A main
     // generation role instruction must win over those incidental references.
+    var explicitCharacterAgent = firstExplicitAgent(["BIOGRAPHER"]);
+    if (explicitCharacterAgent) return explicitCharacterAgent;
     var explicitMainAgent = firstExplicitAgent(["PLANNER", "DIRECTOR", "DESIGNER", "ARBITER", "STORYTELLER"]);
     if (explicitMainAgent) return explicitMainAgent;
     var explicitExtractionAgent = firstExplicitAgent(["ARCHIVIST", "STORYTELLER_DATA"]);
@@ -3178,6 +3269,7 @@
     var isStrongDataExtraction = dataMarkerCount >= 2 || (/状态维护|数据维护|状态提取/.test(value) && dataMarkerCount >= 1);
     var isStrongArchivist = hasAny(["updatedStorySummary", "newDynamicWorldSetting", "storySummaryPatch", "dynamicWorldSettingPatch"]) || (/归档|ARCHIVIST/.test(value) && hasAny(["storySummary", "dynamicWorldSetting", "摘要"]));
     if (isStrongDataExtraction) return "STORYTELLER_DATA";
+    if (hasAnyPrimary(["初始角色设定", "生成一个初始角色设定", "角色的核心概念", "玩家自定义人设指令", "backgroundTags", "talentQuestions", "initialNPCs", "初始人际关系", "身世背景", "出生的具体时间年份"])) return "BIOGRAPHER";
     if (hasAnyPrimary(["reasoning_keywords", "\"keywords\"", "生成 20 个关键词", "生成20个关键词", "请生成20个关键词", "关键词规划", "关键词生成规则", "加权的【启发关键词】"])) return "PLANNER";
     if (hasAnyPrimary(["事件结果", "编写事件结果", "编写事件结果的故事情节文本", "直接输出故事文本", "根据【事件起因】", "根据事件起因", "storytellerText", "根据判定结果", "写出结果", "叙事结果", "本次行动结果", "事件正文"])) return "STORYTELLER";
     if (hasAnyPrimary(["selectedAttribute", "selectedTags", "successRate", "probability", "判定难度", "掷骰", "裁定行动", "成功几率", "行动判定", "检定", "裁定行动关联因素"])) return "ARBITER";
@@ -5916,7 +6008,33 @@
               selectedZeroDays = /步长为 0|0 天|跨越了 0 天|间隔时间.*0/.test(originalRequestText);
             }
             var profile = await getActiveProfile().catch(function(){ return null; });
-            if (profile && Array.isArray(payload.messages)) {
+            if (Array.isArray(payload.messages) && isCharacterGenerationAgent(originalAgentName)) {
+              var characterBlock = buildCharacterGenerationHardDirectiveBlock(originalRequestText || requestText);
+              var characterMessages = sanitizePayloadMessages(payload.messages, null);
+              characterMessages = upsertASiteSystemMessage(characterMessages, characterBlock, "prepend-system");
+              payload.messages = characterMessages;
+              patchedRequestText = messagesToPromptText(characterMessages);
+              latestPatchedPrompt = patchedRequestText;
+              requestText = patchedRequestText;
+              agentName = originalAgentName;
+              pushFetchPatchAudit(Object.assign({
+                originalAgentName: originalAgentName,
+                agentNameFinal: originalAgentName,
+                patched: true,
+                mode: "character-generation",
+                profileId: "",
+                eventId: "",
+                messageCount: characterMessages.length,
+                patchedLength: patchedRequestText.length,
+                granularity: "",
+                detailLevel: "",
+                sceneId: "",
+                activeNpcCount: 0,
+                loreEntriesCount: 0,
+                npcProfilesCount: 0
+              }, summarizePromptMarkers(patchedRequestText)));
+              nextInit = Object.assign({}, init, { body: JSON.stringify(payload) });
+            } else if (profile && Array.isArray(payload.messages)) {
               if (profile.isAlive === false && originalAgentName !== "UNKNOWN") {
                 var now = Date.now();
                 if (!window.__aSiteV2LastTerminalWarnAt || now - window.__aSiteV2LastTerminalWarnAt > 30000) {
@@ -7388,7 +7506,7 @@
             '<label class="asv2-inline-check"><input id="asv2-inline-lock-scene" type="checkbox" data-asv2-inline-field="lockCurrentScene"' + (control.lockCurrentScene ? ' checked' : '') + '> 锁定当前场景</label>',
             '<label class="asv2-inline-check"><input id="asv2-inline-allow-jump" type="checkbox" data-asv2-inline-field="allowTimeJump"' + (control.allowTimeJump ? ' checked' : '') + '> 允许时间跳跃</label>',
           '</div>',
-          '<div class="asv2-inline-foot">' + microNote + '<button type="button" data-asv2-inline-action="leave-scene"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>离场并压缩</button></div>',
+          '<div class="asv2-inline-foot">' + microNote + '<button type="button" data-asv2-inline-action="fate-intervention"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>命运干涉</button><button type="button" data-asv2-inline-action="leave-scene"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>离场并压缩</button></div>',
         '</details>',
       '</section>'
     ].join("");
@@ -7466,6 +7584,83 @@
     var storyAnchor = findStoryFlowAnchor();
     if (storyAnchor) return {element: storyAnchor, position: "before", hideLegacy: null};
     return null;
+  }
+
+  function isElementActuallyVisible(element){
+    if (!element) return false;
+    try {
+      var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+      if (style && (style.display === "none" || style.visibility === "hidden" || style.opacity === "0")) return false;
+      return !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+    } catch (_) {
+      return true;
+    }
+  }
+
+  function triggerNativeFateIntervention(){
+    var button = findButtonByText(["消耗2点激励干涉命运", "干涉命运", "命运干涉"]);
+    if (!button || !isElementActuallyVisible(button)) return false;
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+    try {
+      button.click();
+      return true;
+    } catch (error) {
+      console.warn("[A-Site V2] native fate intervention click failed:", error);
+      return false;
+    }
+  }
+
+  async function applyFallbackFateIntervention(){
+    var text = window.prompt("命运干涉：输入下一轮希望靠近的主题、目标、场景、人物或事件方向。");
+    text = trimText(text);
+    if (!text) return;
+    var direct = window.confirm("是否强制构建命运？\n确定 = 强构建；取消 = 轻微干预。");
+    await mutateInlineProfile(function(profile){
+      var next = normalizePlayer(profile || {});
+      var points = Math.max(0, Math.floor(Number(next.inspirationPoints) || 0));
+      if (points < 2) {
+        showToast("激励点不足，无法干涉命运。", "warn");
+        return Object.assign(next, {__asv2AbortSave:true});
+      }
+      next.inspirationPoints = points - 2;
+      next.customNextTheme = text;
+      next.customNextThemeMode = direct ? "direct" : "soft";
+      return normalizePlayer(next);
+    }, direct ? "命运已被构建。下一轮事件会优先承接该指令。" : "命运已被轻微干预。下一轮事件会参考该指令。");
+  }
+
+  async function handleInlineFateIntervention(){
+    if (triggerNativeFateIntervention()) return;
+    await applyFallbackFateIntervention();
+  }
+
+  function installCharacterGenerationDirectiveField(){
+    if (typeof document === "undefined" || !document.body) return;
+    var conceptField = findCharacterConceptField();
+    var existing = document.getElementById("asv2-character-generation-directive-wrap");
+    if (!conceptField) {
+      if (existing && existing.parentNode) existing.remove();
+      return;
+    }
+    if (existing && existing.parentNode) return;
+    var host = conceptField.closest("label") || conceptField.parentElement || conceptField;
+    if (!host || !host.parentElement || isInsideASiteV2Ui(host)) return;
+    var wrap = document.createElement("div");
+    wrap.id = "asv2-character-generation-directive-wrap";
+    wrap.className = "asv2-character-generation-directive";
+    wrap.innerHTML = [
+      '<label for="asv2-character-generation-directive"><b>人设生成指令</b></label>',
+      '<textarea id="asv2-character-generation-directive" rows="3" placeholder="更硬性的角色生成约束：必须保留的姓名、身份、关系、身体/心理状态、属性倾向、初始NPC、目标或开局事件。"></textarea>',
+      '<small>该内容会在 BIOGRAPHER 角色生成请求中作为 V2 硬注入；不是普通备注。</small>'
+    ].join("");
+    host.parentElement.insertBefore(wrap, host.nextSibling);
+    var textarea = wrap.querySelector("#asv2-character-generation-directive");
+    if (textarea) {
+      textarea.value = readCharacterGenerationDirective();
+      textarea.addEventListener("input", function(){
+        writeCharacterGenerationDirective(textarea.value);
+      });
+    }
   }
 
   var inlineControlsInstalled = false;
@@ -7867,7 +8062,7 @@
       showToast("请先处理本次写入确认，再继续推进。", "warn");
       return;
     }
-    if (action === "granularity" || action === "time-jump" || action === "leave-scene" || action === "chain-start" || action === "chain-continue" || action === "chain-close" || action === "chain-cancel" || action === "chain-keep-draft") {
+    if (action === "granularity" || action === "time-jump" || action === "leave-scene" || action === "fate-intervention" || action === "chain-start" || action === "chain-continue" || action === "chain-close" || action === "chain-cancel" || action === "chain-keep-draft") {
       var guardProfile = await getActiveProfile().catch(function(){ return null; });
       if (guardProfile && getInlinePendingConfirmation(normalizePlayer(guardProfile))) {
         event.preventDefault();
@@ -7923,6 +8118,10 @@
       await mutateInlineProfile(function(profile){
         return reopenNarrativeChainDraft(profile);
       }, "已保留事件链草稿，未推进时间。");
+      return;
+    }
+    if (action === "fate-intervention") {
+      await handleInlineFateIntervention();
       return;
     }
     if (action === "granularity") {
@@ -8277,8 +8476,10 @@
     document.addEventListener("click", handleInlineControlClick);
     document.addEventListener("change", handleInlineControlChange);
     scheduleInlineControlsRender();
+    installCharacterGenerationDirectiveField();
     if (window.MutationObserver && document.body) {
       var observer = new MutationObserver(function(){
+        installCharacterGenerationDirectiveField();
         if (!document.getElementById("a-site-v2-inline-control")) scheduleInlineControlsRender();
       });
       observer.observe(document.body, {childList:true, subtree:true});
@@ -8735,6 +8936,7 @@
       ".asv2-module-editor{border-top:1px solid #ead7b9;padding-top:10px;margin-top:10px}.asv2-module-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}.asv2-module-head button,.asv2-mini-actions button,.asv2-diff-actions button{border:1px solid #b88945;background:#fff8ec;color:#3b2818;border-radius:7px;padding:6px 9px;font-weight:700;cursor:pointer}.asv2-module-filters{display:grid;grid-template-columns:minmax(0,1fr) 140px 170px;gap:7px;margin-bottom:8px}.asv2-module-entry,.asv2-lore-entry,.asv2-npc-profile-entry{border:1px solid #ead7b9;background:#fffaf0;border-radius:9px;padding:9px;margin-bottom:8px}.asv2-module-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.asv2-lore-entry label,.asv2-npc-profile-entry label{display:grid;gap:4px;font-size:12px;color:#6b5438}.asv2-lore-entry input,.asv2-lore-entry select,.asv2-lore-entry textarea,.asv2-npc-profile-entry input,.asv2-npc-profile-entry textarea{width:100%;box-sizing:border-box;border:1px solid #dbc29b;border-radius:7px;background:#fffdf8;color:#2b241d;padding:7px;font:12px/1.45 system-ui,'Microsoft YaHei',sans-serif}.asv2-lore-entry textarea,.asv2-npc-profile-entry textarea{min-height:58px;resize:vertical}.asv2-checks{display:flex;flex-wrap:wrap;gap:8px}.asv2-checks label{display:flex;align-items:center;gap:4px}#asv2-retrieval-log{width:100%;min-height:180px;box-sizing:border-box;border:1px solid #dbc29b;border-radius:8px;background:#fffaf0;color:#2b241d;padding:8px 9px;font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.asv2-mini-actions,.asv2-diff-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:7px}",
       ".asv2-actions{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #dfc49a;background:#f7ead4}.asv2-actions button{border:1px solid #b88945;background:#fff8ec;color:#3b2818;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer}.asv2-actions button:nth-child(2){background:#b7791f;color:white}",
       ".asv2-debug-note{margin:0 0 10px;padding:10px 12px;border:1px solid #dfc49a;background:#fff8ec;border-radius:9px;color:#6b5438;font-size:12px;line-height:1.6}.asv2-debug-details{border:1px solid #ead7b9;border-radius:10px;background:#fffdf8;margin-bottom:10px;overflow:visible;min-width:0;max-width:100%;width:100%;box-sizing:border-box}.asv2-debug-details>summary{cursor:pointer;padding:10px 12px;font-weight:800;color:#5b3a1f;background:#f7ead4}.asv2-debug-details[open]>summary{border-bottom:1px solid #ead7b9}.asv2-debug-content{display:block;min-width:0;max-width:100%;width:100%;box-sizing:border-box;overflow-wrap:anywhere}.asv2-debug-content>section{border:0!important;border-radius:0!important;margin:0!important}",
+      ".asv2-character-generation-directive{margin:10px 0;padding:10px 12px;border:1px solid var(--ui-border,rgba(185,152,95,.32));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 86%,transparent);color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-character-generation-directive label{display:block;margin-bottom:6px;font-size:13px}.asv2-character-generation-directive textarea{width:100%;box-sizing:border-box;min-height:78px;border:1px solid var(--ui-border,#dbc29b);border-radius:10px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 94%,transparent);color:var(--ui-text,#2b241d);padding:8px 9px;font:13px/1.5 system-ui,'Microsoft YaHei',sans-serif;resize:vertical}.asv2-character-generation-directive small{display:block;margin-top:6px;color:var(--ui-muted,#736553);font-size:11px;line-height:1.5}",
       ".asv2-inline-control{position:relative;z-index:2;margin:16px 0;padding:14px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:18px;background:linear-gradient(180deg,color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 92%,transparent),color-mix(in srgb,var(--ui-panel,#fffaf0) 96%,transparent));box-shadow:var(--ui-shadow-soft,0 12px 28px rgba(86,60,31,.12));color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-inline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.asv2-inline-head b{display:block;font-size:14px}.asv2-inline-head span{display:block;color:var(--ui-muted,#736553);font-size:11px;margin-top:2px}.asv2-inline-debug,.asv2-inline-foot button,.asv2-inline-custom button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:14px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-inline-summary{font-size:13px;font-weight:800;line-height:1.5;color:var(--ui-text,#2b241d);padding:8px 10px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:12px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 78%,transparent)}.asv2-inline-blocked-note{margin:8px 0 0;padding:8px 10px;border:1px dashed #c7954d;border-radius:12px;background:#fffaf0;color:#7a5524;font-size:12px;line-height:1.5}.asv2-inline-disabled{opacity:.48!important;cursor:not-allowed!important;filter:saturate(.75)}.asv2-inline-terminal{display:grid;gap:4px;margin:8px 0;padding:10px 12px;border:1px solid #ef8f6f;border-radius:12px;background:#fff1ed;color:#7c2d12;font-size:12px;line-height:1.5}.asv2-inline-terminal b{font-size:13px}.asv2-inline-main-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;margin-top:10px}.asv2-inline-label{font-size:12px;font-weight:900;color:var(--ui-muted,#736553);padding-top:9px}.asv2-inline-status,.asv2-inline-row,.asv2-inline-scene,.asv2-inline-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}.asv2-inline-status span,.asv2-inline-scene span,.asv2-inline-hint{border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 62%,transparent);border-radius:10px;padding:6px 9px;font-size:12px;color:var(--ui-muted,#736553)}.asv2-inline-scene{align-items:stretch}.asv2-inline-scene span{line-height:1.5}.asv2-inline-chip,.asv2-inline-time{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:36px;border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:999px;padding:7px 12px;font-weight:800;cursor:pointer}.asv2-inline-chip-active{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d;border-color:var(--ui-border-strong,#dfc087)}.asv2-inline-time{flex-direction:column;align-items:flex-start;border-radius:14px;min-width:86px}.asv2-inline-time small{font-size:10px;color:var(--ui-muted,#736553)}.asv2-inline-details{margin-top:10px;border-top:1px solid var(--ui-border,rgba(185,152,95,.28));padding-top:8px}.asv2-inline-details>summary{cursor:pointer;color:var(--ui-muted,#736553);font-weight:800;font-size:12px}.asv2-inline-settings label,.asv2-inline-custom{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:14px;padding:6px 8px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 72%,transparent);font-size:12px}.asv2-inline-settings select,.asv2-inline-custom input{border:1px solid var(--ui-border,#dbc29b);border-radius:9px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);padding:5px 7px}.asv2-inline-custom input{width:68px}",
       ".asv2-inline-confirm{margin:10px 0;padding:12px;border:1px solid #d6aa63;border-radius:14px;background:#fff7e8;color:var(--ui-text,#2b241d);box-shadow:0 8px 20px rgba(92,63,29,.08)}.asv2-inline-confirm-title{font-weight:900;margin-bottom:6px}.asv2-inline-confirm p{margin:5px 0;font-size:12px;line-height:1.55;color:var(--ui-muted,#736553)}.asv2-inline-confirm-story{border-left:3px solid #d6aa63;padding-left:8px;color:var(--ui-text,#2b241d)!important}.asv2-inline-confirm-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}.asv2-inline-confirm-actions button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 92%,transparent);color:var(--ui-text,#2b241d);border-radius:12px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-inline-confirm-actions button:first-child{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}",
       ".asv2-chain-panel{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid var(--ui-border,rgba(185,152,95,.34));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 74%,transparent);font-size:12px;line-height:1.55}.asv2-chain-idle{grid-template-columns:minmax(0,1fr) auto;align-items:center}.asv2-chain-panel b{font-weight:900}.asv2-chain-panel span,.asv2-chain-meta{color:var(--ui-muted,#736553)}.asv2-chain-idle button,.asv2-chain-actions button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);border-radius:12px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-chain-title{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.asv2-chain-question{padding:7px 9px;border-left:3px solid #c7954d;background:rgba(255,250,240,.58);border-radius:8px}.asv2-chain-meta{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-transcript{margin:0;padding-left:18px;color:var(--ui-muted,#736553)}.asv2-chain-transcript li{margin:3px 0}.asv2-chain-warning{padding:8px 10px;border:1px dashed #c46d29;border-radius:10px;background:#fff3e4;color:#7a3d12}.asv2-chain-actions{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-actions button:first-child{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}",
@@ -8751,6 +8953,7 @@
     document.body.appendChild(panel);
     button.onclick = function(){ openV2DebugPanel(); };
     installInlineImmersionControls();
+    installCharacterGenerationDirectiveField();
     installRecentLifeCardSync();
   }
 
@@ -8785,6 +8988,9 @@
     buildContextBlock: buildContextBlock,
     buildMainGenerationContextBlock: buildMainGenerationContextBlock,
     buildPrivateFictionBaselineBlock: buildPrivateFictionBaselineBlock,
+    buildCharacterGenerationHardDirectiveBlock: buildCharacterGenerationHardDirectiveBlock,
+    readCharacterGenerationDirective: readCharacterGenerationDirective,
+    writeCharacterGenerationDirective: writeCharacterGenerationDirective,
     buildGranularityAgentContract: buildGranularityAgentContract,
     identifyAgentFromPrompt: identifyAgentFromPrompt,
     getFetchPatchAudit: getFetchPatchAudit,
