@@ -237,6 +237,41 @@
     return "";
   }
 
+  function pickDirectStoryResultText(source){
+    var candidates = [
+      source && source.story,
+      source && source.storytellerText,
+      source && source.storyText,
+      source && source.resultText
+    ];
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (!isInvalidStoryText(candidates[i])) return stripInlineChoicePollution(candidates[i]);
+    }
+    return "";
+  }
+
+  function findDirectStoryResultSource(source){
+    var fields = ["story", "storytellerText", "storyText", "resultText"];
+    for (var i = 0; i < fields.length; i += 1) {
+      var field = fields[i];
+      if (source && !isInvalidStoryText(source[field])) return field;
+    }
+    return "";
+  }
+
+  function eventNeedsOutcomeResolution(source){
+    if (!isObject(source)) return false;
+    if (!isInvalidStoryText(pickDirectStoryResultText(source))) return false;
+    return !!(
+      source.isInteractive ||
+      source.selectedOption ||
+      source.probabilityBreakdown ||
+      source.outcomeType ||
+      source.rollResult !== undefined ||
+      source.finalChance !== undefined
+    );
+  }
+
   function findStoryTextSource(source){
     var fields = ["story", "storytellerText", "text", "content"];
     for (var i = 0; i < fields.length; i += 1) {
@@ -8509,15 +8544,17 @@
       return;
     }
     var currentEventForAccept = snapshot.currentYearEvent;
-    var storyText = pickStoryText(currentEventForAccept);
-    var storyTextSource = findStoryTextSource(currentEventForAccept);
+    var storyText = pickDirectStoryResultText(currentEventForAccept);
+    var storyTextSource = findDirectStoryResultSource(currentEventForAccept);
+    var awaitingOutcomeResolution = eventNeedsOutcomeResolution(currentEventForAccept);
     var pendingFallback = null;
-    if (isInvalidStoryText(storyText)) {
+    if (isInvalidStoryText(storyText) && !awaitingOutcomeResolution) {
       pendingFallback = findPendingStoryEventForLegacyAccept(snapshot.player, currentEventForAccept);
       if (pendingFallback) {
         currentEventForAccept = mergePendingStoryIntoLegacyEvent(currentEventForAccept, pendingFallback);
-        storyText = pickStoryText(currentEventForAccept);
-        storyTextSource = "pendingTextEvents." + (findStoryTextSource(currentEventForAccept) || "story");
+        storyText = pickDirectStoryResultText(currentEventForAccept) || pickStoryText(currentEventForAccept);
+        storyTextSource = "pendingTextEvents." + (findDirectStoryResultSource(currentEventForAccept) || findStoryTextSource(currentEventForAccept) || "story");
+        awaitingOutcomeResolution = false;
       }
     }
     var invalidStory = isInvalidStoryText(storyText);
@@ -8533,11 +8570,12 @@
       storyTextSource: storyTextSource,
       storyTextPreview: storyText.slice(0, 40),
       pendingFallbackEventId: pendingFallback && pendingFallback.id || "",
+      awaitingOutcomeResolution: awaitingOutcomeResolution,
       isInvalidStoryTextResult: invalidStory,
       pendingAcceptedBefore: ensureArray(snapshot.player.pendingAcceptedEvents).length,
       pendingStateDiffsBefore: ensureArray(snapshot.player.pendingStateDiffs).length
     });
-    if (invalidStory) {
+    if (invalidStory || awaitingOutcomeResolution) {
       if (isResultContinueButtonText(buttonText)) {
         return;
       }
