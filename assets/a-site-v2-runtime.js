@@ -5188,8 +5188,9 @@
     }
   }
 
-  function acceptStoryText(player, storyEventId){
+  function acceptStoryText(player, storyEventId, options){
     var normalized = normalizePlayer(player || {});
+    var opts = options || {};
     var id = trimText(storyEventId);
     var pending = readPendingTextEvents().find(function(event){ return event.id === id; });
     var draft = ensureArray(normalized.draftHistory).find(function(event){ return isObject(event) && event.id === id; });
@@ -5217,7 +5218,7 @@
     var storyEvent = Object.assign({}, pending || draft || {id:id}, {
       status: "accepted_text_pending_state",
       acceptedAt: new Date().toISOString(),
-      extractionStatus: "scheduled"
+      extractionStatus: opts.skipPostAcceptanceExtraction ? "deferred_optional_debug" : "scheduled"
     });
     var activeChain = getOpenNarrativeChain(normalized);
     if (activeChain && activeChain.status === "open" && storyEvent.isChainClosure !== true) {
@@ -5227,7 +5228,9 @@
     normalized.pendingAcceptedEvents = ensureArray(normalized.pendingAcceptedEvents).filter(function(event){ return !isObject(event) || event.id !== id; }).concat([storyEvent]);
     normalized = updateSceneMemoryOnAcceptedText(normalized, storyEvent);
     upsertPendingTextEvent(storyEvent);
-    window.setTimeout(function(){ schedulePostAcceptanceExtraction(normalized, storyEvent); }, 80);
+    if (!opts.skipPostAcceptanceExtraction) {
+      window.setTimeout(function(){ schedulePostAcceptanceExtraction(normalized, storyEvent); }, 80);
+    }
     return normalizePlayer(normalized);
   }
 
@@ -5275,15 +5278,17 @@
     return next;
   }
 
-  function interceptLegacyAccept(player, currentYearEvent){
+  function interceptLegacyAccept(player, currentYearEvent, options){
+    var opts = options || {};
     var normalized = normalizePlayer(player || {});
     var prepared = createPendingTextEvent(normalized, currentYearEvent || {});
     var storyEvent = prepared.storyEvent;
     normalized = markSupersededDrafts(normalized, storyEvent);
-    normalized = acceptStoryText(normalized, storyEvent.id);
+    normalized = acceptStoryText(normalized, storyEvent.id, {skipPostAcceptanceExtraction: !!opts.autoCommit});
     normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
     normalized.customNextTheme = undefined;
     normalized.customNextThemeMode = undefined;
+    normalized.lastV2AcceptedStoryEventId = storyEvent.id;
     normalized.lastPhase4InterceptAt = new Date().toISOString();
     return normalizePlayer(normalized);
   }
@@ -7504,9 +7509,9 @@
     var suggestions = formatInlineSuggestions(control.suggestedNextGranularities);
     var microNote = control.granularityPreset === "micro_action" ? '<span class="asv2-inline-hint">微动作通常不推进日期。</span>' : '';
     var summary = "当前：" + granularityLabel(control.granularityPreset) + " · " + dateText + " · " + sceneText + (actionText && actionText !== "未指定" ? " · " + actionText : "");
-    var confirmHtml = renderInlineStateConfirmation(normalized);
-    var hasPendingInlineConfirmation = !!confirmHtml;
-    var blockedNote = hasPendingInlineConfirmation ? '<div class="asv2-inline-blocked-note">请先处理“本次写入确认”，再切换镜头或推进时间，避免绕过正史确认链路。</div>' : '';
+    var confirmHtml = "";
+    var hasPendingInlineConfirmation = false;
+    var blockedNote = "";
     var fateButtonClass = hasPendingInlineConfirmation ? "asv2-inline-fate asv2-inline-disabled" : "asv2-inline-fate";
     return [
       '<section id="a-site-v2-inline-control" class="asv2-inline-control" aria-label="Phase 5 镜头与时间控制">',
@@ -8511,6 +8516,7 @@
     if (!target || isInsideASiteV2Ui(target)) return;
     var buttonText = trimText(target.innerText || target.textContent);
     if (!isLegacyAcceptButtonText(buttonText)) return;
+    if (isResultContinueButtonText(buttonText)) return;
     var bridge = window.__ASiteV2ReactBridge;
     var snapshot = null;
     try {
@@ -8591,7 +8597,18 @@
     if (legacyAcceptCaptureInProgress) return;
     legacyAcceptCaptureInProgress = true;
     try {
-      var accepted = interceptLegacyAccept(snapshot.player, currentEventForAccept);
+      var accepted = interceptLegacyAccept(snapshot.player, currentEventForAccept, {autoCommit:true});
+      var acceptedStoryEventId = trimText(accepted.lastV2AcceptedStoryEventId);
+      var chainAfterAccept = getOpenNarrativeChain(accepted);
+      var isChainBeat = !!(chainAfterAccept && chainAfterAccept.status === "open" && !getInlinePendingConfirmation(accepted));
+      var autoCommitted = false;
+      if (acceptedStoryEventId && !isChainBeat) {
+        var committed = applyInlineEventConfirmation(accepted, acceptedStoryEventId, "default");
+        if (committed && !committed.__asv2AbortSave) {
+          accepted = committed;
+          autoCommitted = storyEventIsAcceptedInProfile(accepted, acceptedStoryEventId);
+        }
+      }
       var saved = await saveProfile(accepted);
       if (!saved || saved.__asv2AbortSave) return;
       syncReactBridgeProfile(saved, {clearCurrentEvent:true, phase:"IDLE"});
@@ -8609,14 +8626,17 @@
         storyTextSource: storyTextSource,
         storyTextPreview: storyText.slice(0, 40),
         isInvalidStoryTextResult: false,
+        autoCommittedToCanon: autoCommitted,
         pendingAcceptedAfter: ensureArray(saved.pendingAcceptedEvents).length,
         pendingStateDiffsAfter: ensureArray(saved.pendingStateDiffs).length
       });
       var savedChain = getOpenNarrativeChain(saved);
       if (savedChain && savedChain.status === "open" && !getInlinePendingConfirmation(saved)) {
         showToast("已加入事件链 beat；链内片段暂不写入正史。");
+      } else if (autoCommitted) {
+        showToast("已接受命运并写入正史。");
       } else {
-        showToast("已接收正文，请在主界面确认本次写入。");
+        showToast("已接收正文；如需处理状态细节，可打开 V2调试。");
       }
     } catch (error) {
       console.error("[A-Site V2] legacy accept capture failed:", error);
