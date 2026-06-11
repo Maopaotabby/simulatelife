@@ -8178,11 +8178,14 @@
     if (!normalized || !candidate) return "";
     var chain = getOpenNarrativeChain(normalized);
     var preview = summarizeStoryForScene(candidate.storyText || "").slice(0, 180);
+    var nativeAcceptVisible = isElementActuallyVisible(findButtonByText("接受命运并成长"));
+    var commitButton = nativeAcceptVisible ? "" : '<button type="button" data-asv2-inline-action="result-chain-commit"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>接受这段结果并成长</button>';
     return [
       '<div class="asv2-chain-panel asv2-result-chain-panel" data-current-result-id="' + escapeHtml(candidate.eventId) + '">',
         '<div class="asv2-chain-title"><b>当前结果可继续</b><span>' + (chain ? '将接入当前事件链' : '可把这段正文作为事件链起点') + '</span></div>',
         '<div class="asv2-chain-question"><b>结果摘要</b>：' + escapeHtml(preview || "当前正文结果") + '</div>',
         '<div class="asv2-chain-actions">',
+          commitButton,
           '<button type="button" data-asv2-inline-action="result-chain-continue" data-granularity="micro_action"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>继续细看这一刻</button>',
           '<button type="button" data-asv2-inline-action="result-chain-continue" data-granularity="small_scene"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>围绕这段推进一小段</button>',
         '</div>',
