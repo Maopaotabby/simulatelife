@@ -4352,7 +4352,7 @@
     }
     if (module === "inspirationPoints") {
       var pointValue = Number(value);
-      if (operation === "append" || operation === "append_note" || operation === "add") next.inspirationPoints = Math.max(0, Number(next.inspirationPoints || 0) + (Number.isFinite(pointValue) ? pointValue : 0));
+      if (operation === "append" || operation === "append_note" || operation === "add" || operation === "increment" || operation === "increase" || operation === "delta") next.inspirationPoints = Math.max(0, Number(next.inspirationPoints || 0) + (Number.isFinite(pointValue) ? pointValue : 0));
       else if (Number.isFinite(pointValue)) next.inspirationPoints = Math.max(0, pointValue);
       return next;
     }
