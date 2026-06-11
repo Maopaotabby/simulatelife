@@ -538,19 +538,90 @@
     };
   }
 
+  function cleanObjectObjectArtifact(value){
+    var text = trimText(value);
+    if (!text) return "";
+    return text.split(/\r?\n/).map(function(line){ return trimText(line); }).filter(function(line){
+      return line && line !== "[object Object]";
+    }).join("\n");
+  }
+
   function defaultStructuredSummaries(existing){
     var source = isObject(existing) ? existing : {};
     return {
-      identitySummary: trimText(source.identitySummary),
-      timelineSummary: trimText(source.timelineSummary),
-      affiliationSummary: trimText(source.affiliationSummary || source.schoolSummary),
-      residenceSummary: trimText(source.residenceSummary || source.homeSummary),
-      relationshipSummary: trimText(source.relationshipSummary),
-      resourceSummary: trimText(source.resourceSummary || source.assetSummary),
-      secretSummary: trimText(source.secretSummary),
-      openThreads: trimText(source.openThreads),
-      recentContinuityNotes: trimText(source.recentContinuityNotes)
+      identitySummary: cleanObjectObjectArtifact(source.identitySummary),
+      timelineSummary: cleanObjectObjectArtifact(source.timelineSummary),
+      affiliationSummary: cleanObjectObjectArtifact(source.affiliationSummary || source.schoolSummary),
+      residenceSummary: cleanObjectObjectArtifact(source.residenceSummary || source.homeSummary),
+      relationshipSummary: cleanObjectObjectArtifact(source.relationshipSummary),
+      resourceSummary: cleanObjectObjectArtifact(source.resourceSummary || source.assetSummary),
+      secretSummary: cleanObjectObjectArtifact(source.secretSummary),
+      openThreads: cleanObjectObjectArtifact(source.openThreads),
+      recentContinuityNotes: cleanObjectObjectArtifact(source.recentContinuityNotes)
     };
+  }
+
+  function structuredSummaryKeyForPatchKey(key){
+    var value = trimText(key).replace(/^structuredSummaries\./, "");
+    var aliases = {
+      identity: "identitySummary",
+      timeline: "timelineSummary",
+      affiliation: "affiliationSummary",
+      school: "affiliationSummary",
+      residence: "residenceSummary",
+      home: "residenceSummary",
+      relationship: "relationshipSummary",
+      resource: "resourceSummary",
+      asset: "resourceSummary",
+      secret: "secretSummary",
+      threads: "openThreads",
+      openThread: "openThreads",
+      openThreads: "openThreads",
+      continuity: "recentContinuityNotes",
+      recentContinuity: "recentContinuityNotes",
+      recentContinuityNotes: "recentContinuityNotes"
+    };
+    if (aliases[value]) return aliases[value];
+    if (defaultStructuredSummaries({})[value] !== undefined) return value;
+    return value || "recentContinuityNotes";
+  }
+
+  function stringifySummaryPatchValue(value){
+    if (typeof value === "string") return trimText(value);
+    if (Array.isArray(value)) return value.map(stringifySummaryPatchValue).filter(Boolean).join("\n");
+    if (isObject(value)) {
+      var direct = trimText(value.text || value.summary || value.value || value.newText || value.content || value.note);
+      if (direct) return direct;
+      try { return JSON.stringify(value); } catch (error) { return ""; }
+    }
+    return trimText(value);
+  }
+
+  function applyStructuredSummariesPatch(current, patch, value, operation){
+    var summaries = defaultStructuredSummaries(current);
+    var rawPath = trimText(patch && patch.path).replace(/^structuredSummaries\./, "");
+    var op = trimText(operation) || "append_note";
+    if (rawPath) {
+      var pathKey = structuredSummaryKeyForPatchKey(rawPath);
+      var pathText = stringifySummaryPatchValue(value);
+      if (op === "replace") summaries[pathKey] = pathText;
+      else summaries[pathKey] = appendNoteText(summaries[pathKey], pathText);
+      return summaries;
+    }
+    if (isObject(value)) {
+      Object.keys(value).forEach(function(key){
+        var summaryKey = structuredSummaryKeyForPatchKey(key);
+        var text = stringifySummaryPatchValue(value[key]);
+        if (!text) return;
+        if (op === "replace") summaries[summaryKey] = text;
+        else summaries[summaryKey] = appendNoteText(summaries[summaryKey], text);
+      });
+      return summaries;
+    }
+    var text = stringifySummaryPatchValue(value);
+    if (op === "replace") summaries.recentContinuityNotes = text;
+    else summaries.recentContinuityNotes = appendNoteText(summaries.recentContinuityNotes, text);
+    return summaries;
   }
 
   function ensureArray(value){
@@ -853,6 +924,7 @@
       summary: summarizeStoryForScene(text || source.summary || source.detail),
       playerAction: trimText(source.playerAction || source.action),
       sourceEventId: trimText(source.sourceEventId),
+      sourceHash: trimText(source.sourceHash) || hashText(text || source.summary || source.detail || ""),
       createdAt: trimText(source.createdAt) || new Date().toISOString()
     });
   }
@@ -903,6 +975,80 @@
   function getOpenNarrativeChain(player){
     var chain = normalizeNarrativeChain(player && player.activeNarrativeChain, player || {});
     return chain && (chain.status === "open" || chain.status === "closure_pending") ? chain : null;
+  }
+
+  function getReactBridgeSnapshotSafe(){
+    try {
+      var bridge = window.__ASiteV2ReactBridge;
+      return bridge && typeof bridge.getSnapshot === "function" ? bridge.getSnapshot() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function getCurrentStoryResultCandidate(){
+    var snapshot = getReactBridgeSnapshotSafe();
+    var event = snapshot && snapshot.currentYearEvent;
+    if (event && !eventNeedsOutcomeResolution(event)) {
+      var storyText = pickDirectStoryResultText(event);
+      if (!isInvalidStoryText(storyText)) {
+        return {
+          snapshot: snapshot,
+          player: snapshot && snapshot.player || null,
+          event: event,
+          storyText: storyText,
+          storyTextSource: findDirectStoryResultSource(event),
+          eventId: trimText(event.v2StoryEventId || event.id) || hashText(storyText).slice(0, 18)
+        };
+      }
+    }
+    return getCurrentStoryResultDomCandidate();
+  }
+
+  function cleanDomResultStoryText(value){
+    var text = stripInlineChoicePollution(cleanVisibleEventText(value));
+    if (!text) return "";
+    var dmMatch = text.match(/DM\s*裁决[\s\S]*?(?:\n\s*){2,}([\s\S]*)/);
+    if (dmMatch && dmMatch[1]) text = dmMatch[1];
+    text = text
+      .replace(/\n\s*(?:编辑文本|重写结果|复制结果|复制全文|接受命运并成长|重随这段命运[\s\S]*?|点击接受后[\s\S]*?)$/g, "")
+      .replace(/\n\s*(?:镜头 \/ 时间推进|Phase 5 日常控制)[\s\S]*$/g, "")
+      .trim();
+    return stripInlineChoicePollution(text);
+  }
+
+  function getCurrentStoryResultDomCandidate(){
+    if (typeof document === "undefined" || !document.body) return null;
+    var acceptButton = findButtonByText("接受命运并成长");
+    if (!acceptButton) return null;
+    var storyText = cleanDomResultStoryText(currentEventCopyText("result", acceptButton) || visibleEventCopyText("result", acceptButton));
+    if (isInvalidStoryText(storyText)) return null;
+    var snapshot = getReactBridgeSnapshotSafe();
+    var source = snapshot && isObject(snapshot.currentYearEvent) ? clonePlain(snapshot.currentYearEvent) : {};
+    var eventId = trimText(source.v2StoryEventId || source.id) || ("dom_result_" + hashText(storyText).slice(0, 18));
+    source.id = eventId;
+    source.v2StoryEventId = eventId;
+    source.story = storyText;
+    source.storytellerText = storyText;
+    source.resultText = storyText;
+    return {
+      snapshot: snapshot,
+      player: snapshot && snapshot.player || null,
+      event: source,
+      storyText: storyText,
+      storyTextSource: "currentResultDom",
+      eventId: eventId
+    };
+  }
+
+  function chainContainsStoryResult(chain, storyEvent){
+    var id = trimText(storyEvent && storyEvent.id);
+    var hash = trimText(storyEvent && storyEvent.sourceHash);
+    return ensureArray(chain && chain.currentSceneTranscript).some(function(beat){
+      if (!isObject(beat)) return false;
+      if (id && (trimText(beat.sourceEventId) === id || trimText(beat.id) === id)) return true;
+      return !!(hash && trimText(beat.sourceHash) === hash);
+    });
   }
 
   function normalizeLoreEntry(raw){
@@ -1134,7 +1280,7 @@
       text: text,
       theme: trimText(source.theme || source.selectedKeyword || legacy.theme || legacy.selectedKeyword),
       outcomeType: trimText(legacy.outcomeType || source.outcomeType || source.arbiterResult && source.arbiterResult.outcomeType),
-      statChanges: isObject(legacy.statChanges) ? legacy.statChanges : (isObject(source.statChanges) ? source.statChanges : {}),
+      statChanges: normalizeLegacyStatChanges(legacy.statChanges !== undefined ? legacy.statChanges : source.statChanges),
       chosenAction: trimText(source.playerAction || source.chosenAction || legacy.selectedOption && legacy.selectedOption.text),
       roll: legacy.rollResult || source.roll,
       chance: legacy.probabilityBreakdown && legacy.probabilityBreakdown.finalChance || source.chance,
@@ -1421,6 +1567,7 @@
     next.sceneMemoryArchive = ensureArray(next.sceneMemoryArchive).filter(isObject);
     next.loreEntries = normalizeLoreEntries(next.loreEntries);
     next.retrievalLog = ensureArray(next.retrievalLog).filter(isObject).slice(-80);
+    next.npcs = ensureArray(next.npcs).map(function(npc){ return normalizeLegacyNpcForRuntime(npc, next.totalDays); }).filter(Boolean);
     next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
     next.pendingStateDiffs = ensureArray(next.pendingStateDiffs).map(normalizeStateDiff).filter(Boolean);
     next.stateDiffHistory = ensureArray(next.stateDiffHistory).map(normalizeStateDiff).filter(Boolean);
@@ -2047,7 +2194,7 @@
       "- 若 detail_level=rich/expansive 或 max_output_length_override 不为空，可按用户偏好写得更充分；不得把 soft_output_length_hint 当作 hard limit。",
       "- 事件链负责连续性，镜头粒度只决定本轮如何观察、压缩或跳跃；不要把五种粒度写成固定上下级。允许悬念，但必须给玩家下一步抓手。",
       "- shortTermSceneMemory 是 non-canon 短期镜头缓存，只服务当前 sceneId 的连续性；不得自动进入 history / storySummary / dynamicWorldSetting / loreEntries / npcProfiles。",
-      "- 只有用户确认 diff 或执行离场压缩后，短期镜头缓存才可能升级为 sceneMemoryArchive / recentInteractions 等长期状态。",
+      "- 只有主流程接受并完成运行时结算，或执行离场压缩后，短期镜头缓存才可能升级为 sceneMemoryArchive / recentInteractions 等长期状态。",
       "- npc_belief / falseBeliefs 不得进入 WORLD_PUBLIC 或 confirmed fact。"
     ].join("\n");
   }
@@ -2197,7 +2344,7 @@
         "4. 可变设定表示当前局势，可以随剧情变化，但不得覆盖固定设定。",
         "5. 若信息只是猜测、传闻、误会、幻觉、比喻或角色主观判断，不得写成客观事实。",
         "6. 事件结果不得自动修改固定设定。",
-        "7. 若正文实际推进了时间，应在状态提取中提出 actualElapsedDaysSuggestion，由用户确认后写回。",
+        "7. 若正文实际推进了时间，应在状态提取中提出 actualElapsedDaysSuggestion，供运行时主流程结算或 V2 调试核对。",
         "8. 只将已接受的正式事件作为正史。草稿、废稿、失败生成和用户讨论不得进入故事事实。"
       ].join("\n"),
       worldContext: buildWorldDescription(normalized),
@@ -2273,10 +2420,10 @@
       buildImmersionContextBlock(player, eventContext || {}),
       "",
       "【状态提取防污染规则】",
-      "Phase 4 顺序：STORYTELLER 阶段只生成正文；只有用户接受正文后，才运行 STORYTELLER_DATA / ARCHIVIST。",
-      "未接受、rejected、superseded、刷新废稿或用户讨论不得触发状态提取，不得进入 pending diff、summary、dynamic 或模块。",
+      "Phase 4/5 顺序：STORYTELLER 阶段只生成正文；只有用户点击“接受命运并成长”后，才运行 STORYTELLER_DATA / ARCHIVIST 并由运行时结算。",
+      "未接受、rejected、superseded、刷新废稿或用户讨论不得触发状态提取，不得进入 active pending diff、summary、dynamic 或模块。",
       "STORYTELLER_DATA 必须输出 confirmedFacts、speculations、npcBeliefs、rejectedOrUnconfirmed、proposedPatches、actualElapsedDaysSuggestion。",
-      "ARCHIVIST 必须输出 proposedPatches，不得直接返回覆盖 fixedWorldSetting；若返回旧字段 updatedStorySummary/newDynamicWorldSetting，运行时会转为待确认 diff。",
+      "ARCHIVIST 必须输出 proposedPatches，不得直接返回覆盖 fixedWorldSetting；若返回旧字段 updatedStorySummary/newDynamicWorldSetting，运行时会转为待结算 diff。",
       "所有 proposedPatches 必须包含 module、operation、value、reason、confidence；不得把 speculative 内容标为 confirmed。",
       "包含“可能、怀疑、似乎、猜测、也许、疑似”的内容不得写入 confirmedFacts、确定标签、确定NPC状态或公开知识；只能作为 speculations、npcBeliefs 或 openThreads。",
       "刷新、失败生成、用户讨论、候选设定不得进入正史摘要。只有 accepted/canon 事件可作为正式上下文。",
@@ -2334,7 +2481,7 @@
       "- chain_continue 时不得重新开新主题；必须围绕 currentDilemma / localObjective / sceneQuestion 继续。",
       "- 不得无故换地点、跳日期或引入无关新事件；除非用户先收束或明确执行时间推进。",
       "- PLANNER 只找当前链的下一个局部焦点；DIRECTOR 续写当前局部局面；DESIGNER 至少给一个继续推进方向和一个暂缓/收束方向；ARBITER 只裁定当前局部选择；STORYTELLER 只写本轮 beat。",
-      "- 本轮 beat 只进入 currentSceneTranscript / shortTermSceneMemory，不默认写 canonHistory；长期状态只在 chain_closure 被用户确认后提取。"
+      "- 本轮 beat 只进入 currentSceneTranscript / shortTermSceneMemory，不默认写 canonHistory；长期状态只在 chain_closure 被主流程接受并结算后提取。"
     ]);
     return lines.join("\n");
   }
@@ -2543,6 +2690,10 @@
     });
   }
 
+  function eventIsQueuedForStateSettlement(profile, sourceEventId){
+    return sourceEventIsAwaitingStateConfirmation(profile, sourceEventId);
+  }
+
   function canAcceptLateExtractionDiffSync(profile, sourceEventId){
     var id = trimText(sourceEventId);
     if (!id || !isObject(profile)) return false;
@@ -2562,7 +2713,7 @@
       sourceAgent: trimText(normalized.sourceAgent),
       originalStatus: trimText(normalized.status || "pending"),
       status: "discarded_late_extraction",
-      reason: reason || "source event is no longer awaiting state confirmation",
+      reason: reason || "source event is no longer eligible for automatic settlement",
       discardedAt: new Date().toISOString(),
       notes: trimText(normalized.notes)
     };
@@ -2589,7 +2740,7 @@
         activePending.push(normalized);
         return;
       }
-      next = recordDiscardedLateExtraction(next, normalized, reason || "pending diff source event is closed or no longer awaiting confirmation");
+      next = recordDiscardedLateExtraction(next, normalized, reason || "pending diff source event is closed or no longer eligible for automatic settlement");
       keptForStorage.push(Object.assign({}, normalized, {
         status: "discarded_late_extraction",
         reviewedAt: now,
@@ -2606,7 +2757,10 @@
     var normalizedDiff = normalizeStateDiff(Object.assign({}, diff || {}, {sourceEventId:eventId}));
     if (!normalizedDiff || !eventId) return {player: normalizePlayer(player || {}), diff: null, discarded: false};
     var latest = await getProfileForStoryEvent(eventId).catch(function(){ return null; });
-    var guardProfile = latest && latest.id ? latest : player;
+    var currentProfile = normalizePlayer(player || {});
+    var currentCanAccept = canAcceptLateExtractionDiffSync(currentProfile, eventId);
+    var latestCanAccept = latest && latest.id ? canAcceptLateExtractionDiffSync(latest, eventId) : false;
+    var guardProfile = currentCanAccept ? currentProfile : (latestCanAccept ? latest : (latest && latest.id ? latest : currentProfile));
     if (!canAcceptLateExtractionDiffSync(guardProfile, eventId)) {
       var audited = recordDiscardedLateExtraction(guardProfile || player, normalizedDiff, "late extraction arrived after source event was confirmed/cancelled/rejected/superseded");
       audited.pendingStateDiffs = pendingDiffsForProfile(audited);
@@ -3413,6 +3567,253 @@
     };
   }
 
+  function normalizeLegacyStatChanges(value){
+    if (isObject(value)) {
+      var objectResult = {};
+      Object.keys(value).forEach(function(key){
+        var raw = value[key];
+        var delta = isObject(raw)
+          ? Number(raw.change !== undefined ? raw.change : raw.delta !== undefined ? raw.delta : raw.value !== undefined ? raw.value : raw.amount)
+          : Number(raw);
+        if (!trimText(key) || !Number.isFinite(delta) || delta === 0) return;
+        objectResult[key] = Number(objectResult[key] || 0) + delta;
+      });
+      return objectResult;
+    }
+    var result = {};
+    ensureArray(value).forEach(function(item){
+      if (!isObject(item)) return;
+      var name = trimText(item.name || item.attribute || item.key || item.stat || item.label);
+      var delta = Number(item.change !== undefined ? item.change : item.delta !== undefined ? item.delta : item.value !== undefined ? item.value : item.amount);
+      if (!name || !Number.isFinite(delta) || delta === 0) return;
+      result[name] = Number(result[name] || 0) + delta;
+    });
+    return result;
+  }
+
+  function escapeLegacySettlementRegex(value){
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function cleanExplicitSettlementToken(value){
+    return trimText(value)
+      .replace(/^["'“”‘’「『【\[]+|["'“”‘’」』】\]]+$/g, "")
+      .replace(/^(?:为|是|叫|名为|一名|一个|新的?)/, "")
+      .replace(/的(?:持有者|携带者|拥有者).*$/g, "")
+      .replace(/(?:已完成|已新增|新增|注入|获得|生效|。|，|；|;|,).*$/g, "")
+      .trim();
+  }
+
+  function pushUniqueText(list, value){
+    var text = cleanExplicitSettlementToken(value);
+    if (text && list.indexOf(text) < 0) list.push(text);
+  }
+
+  function explicitAttributeAliases(player){
+    var aliases = {
+      Body: ["Body","身体","体魄","体能","身体适应性","身体适应性修正"],
+      Intellect: ["Intellect","智力","认知","知识","理智","认知结构","认知结构重组"],
+      Charm: ["Charm","魅力","社交","亲和"],
+      Agility: ["Agility","敏捷","灵巧","行动","步态"],
+      Spirit: ["Spirit","精神","意志","心智"],
+      Wealth: ["Wealth","财富","资源","金钱","资产"]
+    };
+    ensureArray(player && player.attributes).forEach(function(attribute){
+      if (!isObject(attribute) || !trimText(attribute.name)) return;
+      var name = trimText(attribute.name);
+      if (!aliases[name]) aliases[name] = [name];
+      else if (aliases[name].indexOf(name) < 0) aliases[name].push(name);
+    });
+    return aliases;
+  }
+
+  function parseExplicitAttributeDeltas(text, player){
+    var source = String(text || "");
+    var changes = {};
+    var aliases = explicitAttributeAliases(player);
+    Object.keys(aliases).forEach(function(attributeName){
+      var acceptedRanges = [];
+      ensureArray(aliases[attributeName]).slice().sort(function(a, b){ return String(b || "").length - String(a || "").length; }).forEach(function(alias){
+        var pattern = new RegExp(escapeLegacySettlementRegex(alias) + "[^\\n；;。]{0,24}?(?:\\+|提升|增加|增益|修正|重组|提高|下降|降低|减少)?\\s*([+\\-]?\\d+)", "gi");
+        var match;
+        while ((match = pattern.exec(source))) {
+          var start = match.index;
+          var end = pattern.lastIndex;
+          if (acceptedRanges.some(function(range){ return start < range.end && end > range.start; })) continue;
+          var context = source.slice(Math.max(0, match.index - 12), Math.min(source.length, pattern.lastIndex + 12));
+          if (!/[+＋]|提升|增加|增益|修正|重组|提高|下降|降低|减少/.test(context)) continue;
+          var delta = Number(String(match[1]).replace("＋", "+"));
+          if (!Number.isFinite(delta) || delta === 0) continue;
+          if (/下降|降低|减少/.test(context) && delta > 0 && !/[+＋]/.test(match[1])) delta = -delta;
+          acceptedRanges.push({start:start, end:end});
+          changes[attributeName] = Number(changes[attributeName] || 0) + delta;
+        }
+      });
+    });
+    return changes;
+  }
+
+  function parseExplicitLegacySettlementPatchesFromText(text, player){
+    var source = String(text || "");
+    if (!source.trim()) return [];
+    var patches = [];
+    var attrChanges = parseExplicitAttributeDeltas(source, player);
+    if (Object.keys(attrChanges).length) {
+      patches.push({module:"attributes", operation:"update", path:"attributes", value:attrChanges, reason:"接受文本中出现明确属性增量，按旧站状态结算语义写入。", confidence:"confirmed"});
+    }
+    var tags = [];
+    [
+      /(?:状态标签(?:已)?注入|新状态标签注入|新标签|新增标签|获得标签|获得新标签)\s*[:：]?\s*([A-Za-z0-9_\-一-龥][^\n；;，,。]*)/g,
+      /(?:status\s+tag|state\s+tag|new\s+tag)\s*[:：]?\s*([A-Za-z0-9_\-]{6,})/gi,
+      /状态标签\s*([A-Za-z0-9_\-]{6,})[^。\n]{0,40}(?:浮现|出现|显示)/g,
+      /状态标签[^。\n]{0,40}(?:浮现|出现|显示)[^A-Za-z0-9_\-一-龥]{0,20}([A-Za-z0-9_\-]{6,})/g,
+      /被标记为\s*([A-Za-z0-9_\-一-龥][^\n；;，,。]*)/g,
+      /标签\s*[「『“\"]([^」』”\"]+)[」』”\"]/g
+    ].forEach(function(regex){
+      var match;
+      while ((match = regex.exec(source))) pushUniqueText(tags, match[1]);
+    });
+    if (tags.length) {
+      patches.push({module:"tags", operation:"add", path:"tags", value:tags, reason:"接受文本中出现明确新标签，按旧站状态结算语义写入。", confidence:"confirmed"});
+    }
+    var newNpcs = [];
+    [
+      /(?:结识|遇见|新增|新建|出现)\s*(?:一名|一个|新的?)?\s*(?:新)?NPC\s*[:：]?\s*([A-Za-z0-9_\-一-龥][^\n；;，,。]*)/g,
+      /(?:NPC|审计员|角色)[^。\n]{0,24}[—-]{1,2}\s*([A-Za-z][A-Za-z0-9 _-]{1,80})\s*[—-]{1,2}/g,
+      /(?:NPC|审计员|角色)\s*[「『“\"]([^」』”\"]+)[」』”\"]/g,
+      /[「『“\"]\s*(Legacy\s+State\s+Auditor\s+[A-Za-z0-9 _-]*)(?:[。.!！])?\s*[」』”\"]/g,
+      /(?:new\s+npc|npc)\s*[:：]?\s*((?:Legacy\s+State\s+Auditor|[A-Z][A-Za-z0-9_-]*)(?:\s+[A-Za-z0-9_-]+){0,4})(?=[\s.。；;,，]+(?:complete\s+goal|add\s+goal|inspiration|body|intellect|status\s+tag|state\s+tag|new\s+tag|$)|$)/gi
+    ].forEach(function(regex){
+      var match;
+      while ((match = regex.exec(source))) pushUniqueText(newNpcs, match[1]);
+    });
+    if (newNpcs.length) {
+      patches.push({module:"npcs", operation:"add", path:"npcs", value:newNpcs.map(function(name){ return {name:name, description:"由已接受事件明确引入。"}; }), reason:"接受文本中出现明确新 NPC，按旧站状态结算语义写入。", confidence:"confirmed"});
+    }
+    var achievedGoals = [];
+    var addedGoals = [];
+    [
+      /(?:短期目标|目标)\s*[「『“\"]([^」』”\"]+)[」』”\"]\s*[:：]?\s*(?:已)?完成/g,
+      /完成(?:短期)?目标\s*[「『“\"]([^」』”\"]+)[」』”\"]/g,
+      /complete\s+goal\s+(.+?)(?=[\s.。；;,，]+(?:add\s+goal|new\s+npc|npc|inspiration|body|intellect|status\s+tag|state\s+tag|new\s+tag|$)|$)/gi
+    ].forEach(function(regex){
+      var match;
+      while ((match = regex.exec(source))) pushUniqueText(achievedGoals, match[1]);
+    });
+    [
+      /(?:新增|加入|添加)(?:短期)?目标\s*[「『“\"]([^」』”\"]+)[」』”\"]/g,
+      /(?:短期目标|目标)\s*[「『“\"]([^」』”\"]+)[」』”\"]\s*[:：]?\s*(?:已)?新增/g,
+      /(?:另一行目标|目标)\s*(?:叠加|浮现|出现|加入)[^「『“\"]{0,16}[「『“\"]([^」』”\"]+)[」』”\"]/g,
+      /add\s+goal\s+(.+?)(?=[\s.。；;,，]+(?:complete\s+goal|new\s+npc|npc|inspiration|body|intellect|status\s+tag|state\s+tag|new\s+tag|$)|$)/gi
+    ].forEach(function(regex){
+      var match;
+      while ((match = regex.exec(source))) pushUniqueText(addedGoals, match[1]);
+    });
+    if (achievedGoals.length || addedGoals.length) {
+      patches.push({
+        module:"goals",
+        operation:"update",
+        path:"goals",
+        value:{
+          achievedGoals: achievedGoals,
+          modifyGoals: addedGoals.length ? {add: addedGoals.map(function(text){ return {type:"shortTerm", text:text}; })} : {}
+        },
+        reason:"接受文本中出现明确目标完成/新增，按旧站状态结算语义写入。",
+        confidence:"confirmed"
+      });
+    }
+    var inspirationDelta = 0;
+    [
+      /(?:激励点分配|激励点奖励|激励点入账)\s*[:：]?\s*(?:\+|＋)?\s*(\d+)/g,
+      /(?:激励点分配|获得|奖励|增加)\s*[:：]?\s*\+?\s*(\d+)\s*点?激励点/g,
+      /灵感(?:注入|分配|奖励|增加)\s*[:：]?\s*(?:\+|＋)?\s*(\d+)/g,
+      /激励点\s*(?:\+|＋|增加|获得)\s*(\d+)/g,
+      /inspiration\s*(?:increase|add|gain|gained|points?)?\s*(?:\+|plus)?\s*(\d+)/gi
+    ].forEach(function(regex){
+      var match;
+      while ((match = regex.exec(source))) {
+        var amount = Number(match[1]);
+        if (Number.isFinite(amount) && amount > 0) inspirationDelta += amount;
+      }
+    });
+    if (inspirationDelta > 0) {
+      patches.push({module:"inspirationPoints", operation:"add", path:"inspirationPoints", value:inspirationDelta, reason:"接受文本中出现明确激励点增量，按旧站状态结算语义写入。", confidence:"confirmed"});
+    }
+    if (/(?:isDead\s*[:=]\s*true|角色已死亡|生命终止|人生终局|当前人生已结束)/i.test(source)) {
+      patches.push({module:"isAlive", operation:"replace", path:"isAlive", value:false, reason:"接受文本中出现明确死亡/终局标记，按旧站状态结算语义写入。", confidence:"confirmed"});
+    }
+    return patches;
+  }
+
+  function buildExplicitLegacySettlementDiff(player, storyEvent){
+    var event = isObject(storyEvent) ? storyEvent : {};
+    var legacy = isObject(event.legacyEventPayload) ? event.legacyEventPayload : {};
+    var textBlocks = [];
+    var settlementTextSources = legacy.chainTranscriptText ? [
+      legacy.chainTranscriptText
+    ] : [
+      event.text,
+      event.story,
+      event.result,
+      event.outcome,
+      event.theme,
+      event.selectedKeyword,
+      event.directorText,
+      event.customThemeText,
+      event.storyText,
+      event.storyResult,
+      event.storytellerText,
+      event.playerAction,
+      legacy.story,
+      legacy.text,
+      legacy.result,
+      legacy.outcome,
+      legacy.chainTranscriptText,
+      legacy.closureSummary,
+      legacy.selectedKeyword,
+      legacy.customThemeText,
+      legacy.theme
+    ];
+    settlementTextSources.map(function(item){ return typeof item === "string" ? trimText(item) : ""; }).filter(Boolean).forEach(function(item){
+      if (textBlocks.indexOf(item) < 0) textBlocks.push(item);
+    });
+    var text = textBlocks.join("\n");
+    var patches = parseExplicitLegacySettlementPatchesFromText(text, player);
+    if (!patches.length) return null;
+    return normalizeStateDiff({
+      id: makeId("state_diff"),
+      status: "pending",
+      sourceEventId: event.id,
+      sourceAgent: "EXPLICIT_LEGACY_SETTLEMENT",
+      createdAt: new Date().toISOString(),
+      confirmedFacts: [],
+      speculations: [],
+      npcBeliefs: [],
+      rejectedOrUnconfirmed: [],
+      proposedPatches: patches,
+      actualElapsedDaysSuggestion: null,
+      sourceStoryEvent: clonePlain(event),
+      notes: "从已接受正文及 legacy/currentYearEvent 上下文中抽取明确旧站状态结算标记。"
+    });
+  }
+
+  function filterExplicitSettlementDiff(explicitDiff, existingDiffs){
+    var diff = normalizeStateDiff(explicitDiff);
+    if (!diff) return null;
+    var occupied = {};
+    ensureArray(existingDiffs).forEach(function(existing){
+      ensureArray(existing && existing.proposedPatches).forEach(function(patch){
+        var module = trimText(patch && (patch.module || patch.path));
+        if (["attributes","tags","npcs","goals","inspirationPoints","isAlive"].indexOf(module) >= 0) occupied[module] = true;
+      });
+    });
+    diff.proposedPatches = ensureArray(diff.proposedPatches).filter(function(patch){
+      var module = trimText(patch && (patch.module || patch.path));
+      return !occupied[module];
+    });
+    return diff.proposedPatches.length ? normalizeStateDiff(diff) : null;
+  }
+
   function buildDiffFromAgent(agentName, content, requestText, selectedZeroDays){
     var parsed = safeParseJsonText(content) || {};
     var proposedPatches = ensureArray(parsed.proposedPatches);
@@ -3423,27 +3824,40 @@
     var timeSuggestion = parsed.actualElapsedDaysSuggestion || parsed.timeDeltaSuggestion || null;
 
     if (agentName === "STORYTELLER_DATA") {
+      var statChanges = normalizeLegacyStatChanges(parsed.statChanges);
+      if (Object.keys(statChanges).length) {
+        proposedPatches.push({module:"attributes", operation:"update", path:"attributes", value:statChanges, reason:"旧 DATA schema statChanges 自动转换为属性增量 patch。", confidence:"confirmed"});
+      }
       if (Array.isArray(parsed.newTags) && parsed.newTags.length) {
-        proposedPatches.push({module:"tags", operation:"add", path:"tags", value:parsed.newTags, reason:"旧 DATA schema newTags 自动转换为待确认 patch。", confidence:"confirmed"});
+        proposedPatches.push({module:"tags", operation:"add", path:"tags", value:parsed.newTags, reason:"旧 DATA schema newTags 自动转换为自动结算 patch。", confidence:"confirmed"});
       }
       if (Array.isArray(parsed.removedTags) && parsed.removedTags.length) {
-        proposedPatches.push({module:"tags", operation:"remove", path:"tags", value:parsed.removedTags, reason:"旧 DATA schema removedTags 自动转换为待确认 patch。", confidence:"confirmed"});
+        proposedPatches.push({module:"tags", operation:"remove", path:"tags", value:parsed.removedTags, reason:"旧 DATA schema removedTags 自动转换为自动结算 patch。", confidence:"confirmed"});
       }
       if (Array.isArray(parsed.newNPCs) && parsed.newNPCs.length) {
-        proposedPatches.push({module:"npcs", operation:"add", path:"npcs", value:parsed.newNPCs, reason:"旧 DATA schema newNPCs 自动转换为待确认 patch。", confidence:"confirmed"});
+        proposedPatches.push({module:"npcs", operation:"add", path:"npcs", value:parsed.newNPCs, reason:"旧 DATA schema newNPCs 自动转换为自动结算 patch。", confidence:"confirmed"});
       }
       if (Array.isArray(parsed.updatedNPCs) && parsed.updatedNPCs.length) {
-        proposedPatches.push({module:"npcs", operation:"update", path:"npcs", value:parsed.updatedNPCs, reason:"旧 DATA schema updatedNPCs 自动转换为待确认 patch。", confidence:"confirmed"});
+        proposedPatches.push({module:"npcs", operation:"update", path:"npcs", value:parsed.updatedNPCs, reason:"旧 DATA schema updatedNPCs 自动转换为自动结算 patch。", confidence:"confirmed"});
       }
-      if ((Array.isArray(parsed.modifyGoals) && parsed.modifyGoals.length) || (Array.isArray(parsed.achievedGoals) && parsed.achievedGoals.length)) {
+      if ((Array.isArray(parsed.modifyGoals) && parsed.modifyGoals.length) || (isObject(parsed.modifyGoals) && Object.keys(parsed.modifyGoals).length) || (Array.isArray(parsed.achievedGoals) && parsed.achievedGoals.length)) {
         proposedPatches.push({
           module:"goals",
           operation:"update",
           path:"goals",
           value:{modifyGoals: parsed.modifyGoals || [], achievedGoals: parsed.achievedGoals || []},
-          reason:"旧 DATA schema modifyGoals / achievedGoals 自动转换为待确认 patch。",
-          confidence:"inferred"
+          reason:"旧 DATA schema modifyGoals / achievedGoals 自动转换为自动结算 patch。",
+          confidence:"confirmed"
         });
+      }
+      if (parsed.inspirationGained === true || parsed.awardInspiration === true || Number(parsed.inspirationGained) || Number(parsed.awardInspiration)) {
+        var inspirationDelta = Number(parsed.inspirationGained);
+        if (!Number.isFinite(inspirationDelta) || inspirationDelta === 0) inspirationDelta = Number(parsed.awardInspiration);
+        if (!Number.isFinite(inspirationDelta) || inspirationDelta === 0) inspirationDelta = 1;
+        proposedPatches.push({module:"inspirationPoints", operation:"add", path:"inspirationPoints", value:inspirationDelta, reason:"旧 DATA schema inspirationGained / awardInspiration 自动转换为激励点 patch。", confidence:"confirmed"});
+      }
+      if (parsed.isDead === true || parsed.isAlive === false) {
+        proposedPatches.push({module:"isAlive", operation:"replace", path:"isAlive", value:false, reason:"旧 DATA schema isDead 自动转换为终局状态 patch。", confidence:"confirmed"});
       }
     }
 
@@ -3532,6 +3946,10 @@
   }
 
   function normalizeLegacyNewTag(tag){
+    if (typeof tag === "string" || typeof tag === "number") {
+      var tagName = trimText(tag);
+      return tagName ? {name: tagName, acquiredAge: 0} : null;
+    }
     if (!isObject(tag)) return null;
     var next = Object.assign({}, tag, {acquiredAge: Number.isFinite(Number(tag.acquiredAge)) ? Number(tag.acquiredAge) : 0});
     if (Number(next.duration) === 99) delete next.duration;
@@ -3553,8 +3971,24 @@
     var next = ensureArray(tags).slice();
     if (operation === "replace" && Array.isArray(value)) return clonePlain(value);
     if (operation === "remove") {
-      var removals = ensurePatchList(value).map(function(item){ return isObject(item) ? trimText(item.name || item.id) : trimText(item); }).filter(Boolean);
-      return next.filter(function(tag){ return removals.indexOf(trimText(tag && (tag.name || tag.id))) < 0; });
+      var removals = ensurePatchList(value).reduce(function(list, item){
+        if (isObject(item)) {
+          [item.id, item.name, item.title, item.originalName, item.originalId].forEach(function(key){
+            var text = trimText(key).toLowerCase();
+            if (text && list.indexOf(text) < 0) list.push(text);
+          });
+        } else {
+          var text = trimText(item).toLowerCase();
+          if (text && list.indexOf(text) < 0) list.push(text);
+        }
+        return list;
+      }, []);
+      return next.filter(function(tag){
+        var keys = [tag && tag.id, tag && tag.name, tag && tag.title, tag && tag.originalName, tag && tag.originalId]
+          .map(function(key){ return trimText(key).toLowerCase(); })
+          .filter(Boolean);
+        return !keys.some(function(key){ return removals.indexOf(key) >= 0; });
+      });
     }
     var additions = ensurePatchList(value).map(normalizeLegacyNewTag).filter(Boolean);
     if (operation === "update") return addUniqueByName(next, additions);
@@ -3566,38 +4000,73 @@
     return next;
   }
 
+  function normalizeLegacyNpcForRuntime(npc, totalDays){
+    if (!isObject(npc)) return null;
+    var next = Object.assign({}, npc);
+    var name = trimText(next.name);
+    var id = trimText(next.id);
+    if (!name && !id) return null;
+    if (!name && id) next.name = id;
+    if (!id && name && !next.id) next.id = "";
+    if (!trimText(next.status)) next.status = "alive";
+    if (!trimText(next.relation)) next.relation = "encountered";
+    if (!trimText(next.description)) next.description = "由已接受事件记录的人物。";
+    if (typeof next.initialAge === "number" && next.birthDayOffset === undefined) {
+      next.birthDayOffset = Number(totalDays || 0) - next.initialAge * 365;
+    }
+    delete next.initialAge;
+    return next;
+  }
+
   function applyLegacyNpcPatch(npcs, value, operation, totalDays){
-    var next = ensureArray(npcs).slice();
-    if (operation === "replace" && Array.isArray(value)) return clonePlain(value);
+    var next = ensureArray(npcs).map(function(npc){ return normalizeLegacyNpcForRuntime(npc, totalDays); }).filter(Boolean);
+    if (operation === "replace" && Array.isArray(value)) {
+      return value.map(function(npc){ return normalizeLegacyNpcForRuntime(npc, totalDays); }).filter(Boolean);
+    }
+    function npcMatchKeys(npc){
+      return [npc && npc.id, npc && npc.originalId, npc && npc.name, npc && npc.originalName]
+        .map(function(key){ return trimText(key).toLowerCase(); })
+        .filter(Boolean);
+    }
+    function legacyNpcIndex(item){
+      var keys = npcMatchKeys(item);
+      if (!keys.length) return -1;
+      return next.findIndex(function(npc){
+        var existingKeys = npcMatchKeys(npc);
+        return existingKeys.some(function(key){ return keys.indexOf(key) >= 0; });
+      });
+    }
     if (operation === "remove") {
       var removals = ensurePatchList(value).map(function(item){ return isObject(item) ? trimText(item.name || item.id) : trimText(item); }).filter(Boolean);
-      return next.filter(function(npc){ return removals.indexOf(trimText(npc && (npc.name || npc.id))) < 0; });
+      var removalKeys = removals.map(function(item){ return trimText(item).toLowerCase(); }).filter(Boolean);
+      return next.filter(function(npc){
+        return !npcMatchKeys(npc).some(function(key){ return removalKeys.indexOf(key) >= 0; });
+      });
     }
     var items = ensurePatchList(value).filter(isObject);
     if (operation === "update") {
       items.forEach(function(item){
-        var lookup = trimText(item.originalName || item.name);
-        var index = next.findIndex(function(npc){ return trimText(npc && npc.name) === lookup; });
+        var index = legacyNpcIndex(item);
         if (index !== -1) {
           var updated = Object.assign({}, item);
           delete updated.originalName;
-          next[index] = Object.assign({}, next[index], updated);
+          delete updated.originalId;
+          next[index] = normalizeLegacyNpcForRuntime(Object.assign({}, next[index], updated), totalDays) || next[index];
         }
       });
       return next;
     }
     items.forEach(function(item){
       var name = trimText(item.name);
-      if (!name) return;
-      var index = next.findIndex(function(npc){ return trimText(npc && npc.name) === name; });
+      var id = trimText(item.id);
+      if (!name && !id) return;
+      var index = legacyNpcIndex(item);
       if (index !== -1) {
-        next[index] = Object.assign({}, next[index], item);
+        next[index] = normalizeLegacyNpcForRuntime(Object.assign({}, next[index], item), totalDays) || next[index];
         return;
       }
-      var initialAge = typeof item.initialAge === "number" ? item.initialAge : 0;
-      var created = Object.assign({}, item, {birthDayOffset: Number(totalDays || 0) - initialAge * 365});
-      delete created.initialAge;
-      next.push(created);
+      var created = normalizeLegacyNpcForRuntime(item, totalDays);
+      if (created) next.push(created);
     });
     return next;
   }
@@ -3606,13 +4075,19 @@
     var eventId = trimText(sourceEventId);
     if (!eventId) return player;
     var drafts = ensureArray(player && player.draftHistory);
-    var event = drafts.find(function(item){ return isObject(item) && item.id === eventId; });
+    var pendingAccepted = ensureArray(player && player.pendingAcceptedEvents);
+    var event = drafts.concat(pendingAccepted).find(function(item){
+      return isObject(item) && (item.id === eventId || item.sourceEventId === eventId);
+    });
     if (!event || event.status === "accepted" || event.tagDurationTickedAt) return player;
     var before = clonePlain(player);
     var next = clonePlain(player);
     next.tags = tickLegacyTagDurations(next.tags);
     next.draftHistory = drafts.map(function(item){
-      return isObject(item) && item.id === eventId ? Object.assign({}, item, {tagDurationTickedAt: new Date().toISOString()}) : item;
+      return isObject(item) && (item.id === eventId || item.sourceEventId === eventId) ? Object.assign({}, item, {tagDurationTickedAt: new Date().toISOString()}) : item;
+    });
+    next.pendingAcceptedEvents = pendingAccepted.map(function(item){
+      return isObject(item) && (item.id === eventId || item.sourceEventId === eventId) ? Object.assign({}, item, {tagDurationTickedAt: new Date().toISOString()}) : item;
     });
     if (JSON.stringify(before.tags || []) === JSON.stringify(next.tags || [])) return next;
     return appendPatchHistory(next, before, next, {
@@ -3624,9 +4099,32 @@
   }
 
   function appendNoteText(current, value){
-    var next = trimText(value);
-    if (!next) return trimText(current);
-    return [trimText(current), next].filter(Boolean).join("\n");
+    var base = cleanObjectObjectArtifact(current);
+    var next = cleanObjectObjectArtifact(value);
+    if (!next) return base;
+    return [base, next].filter(Boolean).join("\n");
+  }
+
+  function patchValueToReadableText(value){
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return cleanObjectObjectArtifact(value);
+    if (Array.isArray(value)) {
+      return value.map(patchValueToReadableText).filter(Boolean).join("\n");
+    }
+    if (isObject(value)) {
+      var label = trimText(value.key || value.title || value.name || value.type);
+      var text = trimText(value.value || value.summary || value.text || value.detail || value.description || value.reason || value.note || value.notes);
+      var reason = trimText(value.reason && value.reason !== text ? value.reason : "");
+      var visibility = trimText(value.visibility);
+      var parts = [];
+      if (label && text) parts.push(label + ": " + text);
+      else if (text) parts.push(text);
+      else if (label) parts.push(label);
+      if (reason) parts.push("原因：" + reason);
+      if (visibility) parts.push("可见性：" + visibility);
+      return cleanObjectObjectArtifact(parts.join("；"));
+    }
+    return cleanObjectObjectArtifact(String(value || ""));
   }
 
   var LEGACY_DEFAULT_LONG_GOAL = "随遇而安";
@@ -3637,7 +4135,7 @@
     var source = isObject(goals) ? goals : {};
     return {
       longTerm: trimText(source.longTerm) || LEGACY_DEFAULT_LONG_GOAL,
-      shortTerm: ensureArray(source.shortTerm).map(function(item){ return trimText(item); }).filter(Boolean).slice(0, 3),
+      shortTerm: ensureArray(source.shortTerm).map(function(item){ return trimText(item); }).filter(function(item){ return item && item.indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; }).slice(0, 3),
       completed: ensureArray(source.completed).map(clonePlain)
     };
   }
@@ -3688,10 +4186,35 @@
     var source = isObject(value) ? value : {};
     var changes = Array.isArray(value) ? value : ensureArray(source.modifyGoals || source.proposedChanges);
     if (isObject(source.modifyGoals) && !Array.isArray(source.modifyGoals)) {
-      ensureArray(source.modifyGoals.add).forEach(function(item){
-        var text = trimText(isObject(item) ? item.text || item.name : item);
-        if (text && goals.shortTerm.length < 3 && goals.shortTerm.indexOf(text) < 0) goals.shortTerm.push(text);
-      });
+      var pendingGoalAdds = [];
+      var pendingLongTerm = "";
+      var addSource = source.modifyGoals.add;
+      if (isObject(addSource) && !Array.isArray(addSource)) {
+        ensureArray(addSource.shortTerm || addSource.short || addSource.shortTerms).forEach(function(item){
+          var text = trimText(isObject(item) ? item.text || item.name || item.title : item);
+          if (text) pendingGoalAdds.push(text);
+        });
+        pendingLongTerm = trimText(
+          addSource.longTerm ||
+          addSource.long ||
+          addSource.longTermGoal ||
+          addSource.newLongTerm ||
+          addSource.new_longTermGoal
+        );
+      } else {
+        ensureArray(addSource).forEach(function(item){
+          if (isObject(item)) {
+            var type = trimText(item.type || item.kind || item.scope);
+            var text = trimText(item.text || item.name || item.title);
+            if (!text) return;
+            if (type === "longTerm" || type === "long" || type === "长期夙愿") pendingLongTerm = text;
+            else pendingGoalAdds.push(text);
+          } else {
+            var rawText = trimText(item);
+            if (rawText) pendingGoalAdds.push(rawText);
+          }
+        });
+      }
       ensureArray(source.modifyGoals.remove).forEach(function(item){
         var needle = trimText(isObject(item) ? item.text || item.name : item);
         var index = Number.isFinite(Number(item)) ? Number(item) - 1 : -1;
@@ -3701,6 +4224,11 @@
         if (index >= 0 && index < goals.shortTerm.length) goals.shortTerm[index] = LEGACY_PENDING_GOAL_REMOVAL;
       });
       ensureArray(source.modifyGoals.achieve).forEach(function(item){ applyAchievedGoal(goals, item, ageText); });
+      goals.shortTerm = goals.shortTerm.filter(function(item){ return trimText(item).indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; });
+      pendingGoalAdds.forEach(function(text){
+        if (text && goals.shortTerm.length < 3 && goals.shortTerm.indexOf(text) < 0) goals.shortTerm.push(text);
+      });
+      if (pendingLongTerm) goals.longTerm = pendingLongTerm;
     }
     changes.forEach(function(change){
       if (!isObject(change)) return;
@@ -3721,12 +4249,23 @@
       }
     });
     ensureArray(source.achievedGoals).forEach(function(item){ applyAchievedGoal(goals, item, ageText); });
+    if (isObject(source.modifyGoals) && !Array.isArray(source.modifyGoals)) {
+      var nextLongTerm = trimText(
+        source.modifyGoals.setLongTerm ||
+        source.modifyGoals.newLongTerm ||
+        source.modifyGoals.longTerm ||
+        source.modifyGoals.new_longTermGoal ||
+        source.modifyGoals.set_longTerm ||
+        source.modifyGoals.setLongTermGoal
+      );
+      if (nextLongTerm) goals.longTerm = nextLongTerm;
+    }
     if (trimText(source.new_longTermGoal)) goals.longTerm = trimText(source.new_longTermGoal);
     if (trimText(source.longTerm) && !source.proposedChanges && !source.modifyGoals) goals.longTerm = trimText(source.longTerm);
     if (Array.isArray(source.new_shortTermGoals)) goals.shortTerm = source.new_shortTermGoals.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, 3);
     else if (Array.isArray(source.shortTerm) && !source.proposedChanges && !source.modifyGoals) goals.shortTerm = source.shortTerm.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, 3);
     if (Array.isArray(source.completed) && !source.proposedChanges && !source.modifyGoals) goals.completed = source.completed.map(clonePlain);
-    goals.shortTerm = goals.shortTerm.filter(function(item){ return item !== LEGACY_PENDING_GOAL_REMOVAL; });
+    goals.shortTerm = goals.shortTerm.filter(function(item){ return trimText(item).indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; });
     return goals;
   }
 
@@ -3736,9 +4275,17 @@
     var operation = patch.operation || "update";
     var value = attachPatchSource(patch.value, patch);
     if (module === "dynamicWorldSetting") {
-      if (operation === "replace") next.dynamicWorldSetting = String(value || "");
-      else if (operation === "append" || operation === "append_note" || operation === "revise_section") next.dynamicWorldSetting = appendNoteText(next.dynamicWorldSetting, value);
+      var dynamicText = patchValueToReadableText(value);
+      if (operation === "replace") next.dynamicWorldSetting = dynamicText;
+      else if (operation === "append" || operation === "append_note" || operation === "revise_section" || operation === "upsert" || operation === "update") next.dynamicWorldSetting = appendNoteText(next.dynamicWorldSetting, dynamicText);
       next.worldDescription = buildWorldDescription(next);
+      return next;
+    }
+    if (module === "recentContinuityReminder") {
+      var reminderText = patchValueToReadableText(value);
+      next.structuredSummaries = defaultStructuredSummaries(next.structuredSummaries);
+      if (operation === "replace") next.structuredSummaries.recentContinuityNotes = reminderText;
+      else next.structuredSummaries.recentContinuityNotes = appendNoteText(next.structuredSummaries.recentContinuityNotes, reminderText);
       return next;
     }
     if (module === "storySummary") {
@@ -3747,11 +4294,7 @@
       return next;
     }
     if (module === "structuredSummaries") {
-      next.structuredSummaries = defaultStructuredSummaries(next.structuredSummaries);
-      var key = trimText(patch.path).replace(/^structuredSummaries\./, "") || "recentContinuityNotes";
-      if (!next.structuredSummaries[key]) next.structuredSummaries[key] = "";
-      if (operation === "replace") next.structuredSummaries[key] = String(value || "");
-      else next.structuredSummaries[key] = appendNoteText(next.structuredSummaries[key], value);
+      next.structuredSummaries = applyStructuredSummariesPatch(next.structuredSummaries, patch, value, operation);
       return next;
     }
     if (module === "attributes") {
@@ -3772,6 +4315,10 @@
     if (module === "goals") {
       if (patch.path && trimText(patch.path) !== "goals") return writePathValue(next, patch.path, value);
       if (operation === "replace" && isObject(value) && (Array.isArray(value.shortTerm) || Array.isArray(value.completed) || value.longTerm !== undefined)) next.goals = normalizeGoalsState(value);
+      else if (operation === "add") next.goals = applyGoalPatchValue(next.goals, {modifyGoals:{add:[value]}}, next.age);
+      else if (operation === "remove") next.goals = applyGoalPatchValue(next.goals, {modifyGoals:{remove:[value]}}, next.age);
+      else if (operation === "complete" || operation === "achieve") next.goals = applyGoalPatchValue(next.goals, {achievedGoals:[value]}, next.age);
+      else if (operation === "setLongTerm" || operation === "set_longTerm") next.goals = applyGoalPatchValue(next.goals, {modifyGoals:{setLongTerm:value}}, next.age);
       else next.goals = applyGoalPatchValue(next.goals, value, next.age);
       return next;
     }
@@ -3859,8 +4406,8 @@
         if (value.newNPCs !== undefined) next.npcs = applyLegacyNpcPatch(next.npcs, value.newNPCs, "add", next.totalDays);
         return next;
       }
-      if ((operation === "add" || operation === "update") && (Array.isArray(value) || isObject(value))) {
-        next.npcs = addUniqueByName(ensureArray(next.npcs), ensurePatchList(value).filter(isObject));
+      if (operation === "add" || operation === "update" || operation === "remove" || operation === "replace") {
+        next.npcs = applyLegacyNpcPatch(next.npcs, value, operation, next.totalDays);
         return next;
       }
       next.npcs = applyLegacyNpcPatch(next.npcs, value, operation, next.totalDays);
@@ -3900,9 +4447,12 @@
     var normalized = normalizePlayer(player || {});
     var module = trimText(patch && (patch.module || patch.path));
     if (module === "dynamicWorldSetting") return clonePlain(normalized.dynamicWorldSetting || "");
+    if (module === "recentContinuityReminder") return clonePlain(defaultStructuredSummaries(normalized.structuredSummaries).recentContinuityNotes || "");
     if (module === "storySummary") return clonePlain(normalized.storySummary || "");
     if (module === "structuredSummaries") {
-      var key = trimText(patch && patch.path).replace(/^structuredSummaries\./, "") || "recentContinuityNotes";
+      var rawPath = trimText(patch && patch.path).replace(/^structuredSummaries\./, "");
+      if (!rawPath && isObject(patch && patch.value)) return clonePlain(defaultStructuredSummaries(normalized.structuredSummaries));
+      var key = structuredSummaryKeyForPatchKey(rawPath || "recentContinuityNotes");
       return clonePlain(defaultStructuredSummaries(normalized.structuredSummaries)[key] || "");
     }
     if (module === "authorOnlySetting") return clonePlain(defaultKnowledgeLayers(normalized.knowledgeLayers).authorOnlySetting || "");
@@ -3923,14 +4473,18 @@
       next.worldDescription = buildWorldDescription(next);
       return next;
     }
+    if (module === "recentContinuityReminder") {
+      next.structuredSummaries = defaultStructuredSummaries(next.structuredSummaries);
+      next.structuredSummaries.recentContinuityNotes = String(value || "");
+      return next;
+    }
     if (module === "storySummary") {
       next.storySummary = String(value || "");
       return next;
     }
     if (module === "structuredSummaries") {
-      next.structuredSummaries = defaultStructuredSummaries(next.structuredSummaries);
-      var key = trimText(patch && patch.path).replace(/^structuredSummaries\./, "") || "recentContinuityNotes";
-      next.structuredSummaries[key] = String(value || "");
+      if (!trimText(patch && patch.path) && isObject(value)) next.structuredSummaries = defaultStructuredSummaries(value);
+      else next.structuredSummaries = applyStructuredSummariesPatch(next.structuredSummaries, patch, value, "replace");
       return next;
     }
     if (module === "authorOnlySetting" || module === "protagonistKnownSetting" || module === "publicKnownSetting") {
@@ -4231,7 +4785,7 @@
       text: storyEvent.storytellerText || legacy.story || "",
       theme: storyEvent.theme || legacy.theme || legacy.selectedKeyword || "",
       outcomeType: legacy.outcomeType || storyEvent.arbiterResult && storyEvent.arbiterResult.outcomeType || "",
-      statChanges: legacy.statChanges || {},
+      statChanges: normalizeLegacyStatChanges(legacy.statChanges),
       chosenAction: storyEvent.playerAction || "",
       roll: legacy.rollResult,
       chance: legacy.probabilityBreakdown && legacy.probabilityBreakdown.finalChance,
@@ -4252,41 +4806,45 @@
   function buildFallbackDiffFromLegacyEvent(player, storyEvent){
     var legacy = isObject(storyEvent && storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
     var patches = [];
-    if (isObject(legacy.statChanges) && Object.keys(legacy.statChanges).length) {
-      patches.push({module:"attributes", operation:"update", value:legacy.statChanges, reason:"旧接受流程属性变化转为待确认 patch。", confidence:"confirmed"});
+    var legacyStatChanges = normalizeLegacyStatChanges(legacy.statChanges);
+    if (Object.keys(legacyStatChanges).length) {
+      patches.push({module:"attributes", operation:"update", value:legacyStatChanges, reason:"旧接受流程属性变化转为自动结算 patch。", confidence:"confirmed"});
     }
     if (Array.isArray(legacy.newTags) && legacy.newTags.length) {
-      patches.push({module:"tags", operation:"add", value:legacy.newTags, reason:"旧接受流程 newTags 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"tags", operation:"add", value:legacy.newTags, reason:"旧接受流程 newTags 转为自动结算 patch。", confidence:"confirmed"});
     }
     if (Array.isArray(legacy.removedTags) && legacy.removedTags.length) {
-      patches.push({module:"tags", operation:"remove", value:legacy.removedTags, reason:"旧接受流程 removedTags 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"tags", operation:"remove", value:legacy.removedTags, reason:"旧接受流程 removedTags 转为自动结算 patch。", confidence:"confirmed"});
     }
     if (Array.isArray(legacy.newNPCs) && legacy.newNPCs.length) {
-      patches.push({module:"npcs", operation:"add", value:legacy.newNPCs, reason:"旧接受流程 newNPCs 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"npcs", operation:"add", value:legacy.newNPCs, reason:"旧接受流程 newNPCs 转为自动结算 patch。", confidence:"confirmed"});
     }
     if (Array.isArray(legacy.updatedNPCs) && legacy.updatedNPCs.length) {
-      patches.push({module:"npcs", operation:"update", value:legacy.updatedNPCs, reason:"旧接受流程 updatedNPCs 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"npcs", operation:"update", value:legacy.updatedNPCs, reason:"旧接受流程 updatedNPCs 转为自动结算 patch。", confidence:"confirmed"});
     }
-    if ((Array.isArray(legacy.modifyGoals) && legacy.modifyGoals.length) || (Array.isArray(legacy.achievedGoals) && legacy.achievedGoals.length)) {
+    if ((Array.isArray(legacy.modifyGoals) && legacy.modifyGoals.length) || (isObject(legacy.modifyGoals) && Object.keys(legacy.modifyGoals).length) || (Array.isArray(legacy.achievedGoals) && legacy.achievedGoals.length)) {
       patches.push({
         module:"goals",
         operation:"update",
         value:{modifyGoals:legacy.modifyGoals || [], achievedGoals:legacy.achievedGoals || []},
-        reason:"旧接受流程 modifyGoals / achievedGoals 转为待确认 patch。",
-        confidence:"inferred"
+        reason:"旧接受流程 modifyGoals / achievedGoals 转为自动结算 patch。",
+        confidence:"confirmed"
       });
     }
     if (legacy.updatedStorySummary) {
-      patches.push({module:"storySummary", operation:"replace", value:legacy.updatedStorySummary, reason:"旧 ARCHIVIST updatedStorySummary 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"storySummary", operation:"replace", value:legacy.updatedStorySummary, reason:"旧 ARCHIVIST updatedStorySummary 转为自动结算 patch。", confidence:"confirmed"});
     }
     if (legacy.newDynamicWorldSetting) {
-      patches.push({module:"dynamicWorldSetting", operation:"replace", value:legacy.newDynamicWorldSetting, reason:"旧 ARCHIVIST newDynamicWorldSetting 转为待确认 patch。", confidence:"confirmed"});
+      patches.push({module:"dynamicWorldSetting", operation:"replace", value:legacy.newDynamicWorldSetting, reason:"旧 ARCHIVIST newDynamicWorldSetting 转为自动结算 patch。", confidence:"confirmed"});
     }
-    if (legacy.isDead === true) {
-      patches.push({module:"isAlive", operation:"replace", path:"isAlive", value:false, reason:"旧 DATA schema isDead 转为待确认 patch。", confidence:"confirmed"});
+    if (legacy.isDead === true || legacy.isAlive === false) {
+      patches.push({module:"isAlive", operation:"replace", path:"isAlive", value:false, reason:"旧 DATA schema isDead 转为自动结算 patch。", confidence:"confirmed"});
     }
-    if (legacy.inspirationGained === true || legacy.awardInspiration === true) {
-      patches.push({module:"inspirationPoints", operation:"add", path:"inspirationPoints", value:1, reason:"旧 DATA schema inspirationGained 转为待确认 patch。", confidence:"confirmed"});
+    if (legacy.inspirationGained === true || legacy.awardInspiration === true || Number(legacy.inspirationGained) || Number(legacy.awardInspiration)) {
+      var inspirationDelta = Number(legacy.inspirationGained);
+      if (!Number.isFinite(inspirationDelta) || inspirationDelta === 0) inspirationDelta = Number(legacy.awardInspiration);
+      if (!Number.isFinite(inspirationDelta) || inspirationDelta === 0) inspirationDelta = 1;
+      patches.push({module:"inspirationPoints", operation:"add", path:"inspirationPoints", value:inspirationDelta, reason:"旧 DATA schema inspirationGained / awardInspiration 转为自动结算 patch。", confidence:"confirmed"});
     }
     var detected = detectActualElapsedDays(storyEvent.storytellerText);
     return normalizeStateDiff({
@@ -4307,7 +4865,7 @@
       } : null,
       rawModelOutput: clonePlain(legacy),
       sourceStoryEvent: clonePlain(storyEvent || {}),
-      notes: "主 bundle 接受流程已被 Phase 4 接管；旧状态写回被转为待确认 diff。"
+      notes: "主 bundle 接受流程已被 Phase 4/5 接管；旧状态写回会在“接受命运并成长”后自动结算。"
     });
   }
 
@@ -4411,10 +4969,30 @@
 
   function buildExtractionMessages(player, storyEvent, agentName){
     var normalized = normalizePlayer(player || {});
+    var legacyPayload = isObject(storyEvent && storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
+    var legacyExtractionContext = {
+      selectedKeyword: trimText(legacyPayload.selectedKeyword),
+      customThemeText: trimText(legacyPayload.customThemeText),
+      customThemeMode: trimText(legacyPayload.customThemeMode),
+      theme: trimText(legacyPayload.theme),
+      result: trimText(legacyPayload.result || legacyPayload.outcome),
+      statChanges: normalizeLegacyStatChanges(legacyPayload.statChanges),
+      newTags: ensureArray(legacyPayload.newTags),
+      removedTags: ensureArray(legacyPayload.removedTags),
+      newNPCs: ensureArray(legacyPayload.newNPCs),
+      updatedNPCs: ensureArray(legacyPayload.updatedNPCs),
+      modifyGoals: legacyPayload.modifyGoals || null,
+      achievedGoals: ensureArray(legacyPayload.achievedGoals),
+      inspirationGained: legacyPayload.inspirationGained,
+      awardInspiration: legacyPayload.awardInspiration,
+      isDead: legacyPayload.isDead,
+      isAlive: legacyPayload.isAlive
+    };
     var eventPayload = {
       sourceEventId: storyEvent.id,
       eventStatus: storyEvent.status,
       acceptedText: storyEvent.storytellerText,
+      legacyEventContext: legacyExtractionContext,
       playerAction: storyEvent.playerAction,
       arbiterResult: storyEvent.arbiterResult,
       eventDate: storyEvent.eventDate,
@@ -4439,9 +5017,16 @@
       "不得把可能、猜测、误会、传闻、梦境、比喻、角色主观看法写成 confirmedFacts。",
       "不得直接修改 fixedWorldSetting。所有变化只能作为 proposedPatches。",
       "所有 proposedPatches 必须带 module、operation、value、reason、confidence。"
-    ].join("\n");
+    ];
+    if (agentName === "STORYTELLER_DATA") {
+      schemaText.push(
+        "兼容旧站状态结算：若已接受正文或 legacyEventContext 中明确出现属性增量、newTags、removedTags、newNPCs、updatedNPCs、modifyGoals、achievedGoals、inspirationGained/awardInspiration、isDead，请直接输出对应 proposedPatches。",
+        "映射要求：statChanges -> module=attributes operation=update；newTags/removedTags -> module=tags；newNPCs/updatedNPCs -> module=npcs；modifyGoals/achievedGoals -> module=goals；inspirationGained/awardInspiration -> module=inspirationPoints；isDead -> module=isAlive value=false。"
+      );
+    }
+    schemaText = schemaText.join("\n");
     return [
-      {role:"system", content: buildContextBlock(normalized, {eventText: storyEvent.storytellerText, agentName:agentName}) + "\n\n" + POST_ACCEPT_MARKER + "\n你是 " + agentName + "。你只处理用户已经接受的正文，并输出待用户确认的状态 diff。"},
+      {role:"system", content: buildContextBlock(normalized, {eventText: storyEvent.storytellerText, agentName:agentName}) + "\n\n" + POST_ACCEPT_MARKER + "\n你是 " + agentName + "。你只处理用户已经接受的正文，并输出供运行时结算的状态 diff；不要要求玩家再次确认。"},
       {role:"user", content: [
         "【已接受正文事件】",
         JSON.stringify(eventPayload, null, 2),
@@ -4709,6 +5294,61 @@
     return normalizePlayer(next);
   }
 
+  function startNarrativeChainFromStoryResult(player, currentYearEvent, reason){
+    var next = normalizePlayer(player || {});
+    var source = isObject(currentYearEvent) ? currentYearEvent : {};
+    var storyText = pickDirectStoryResultText(source) || pickStoryText(source);
+    if (isInvalidStoryText(storyText)) {
+      next.__asv2AbortSave = true;
+      showToast("当前没有可继续的正文结果。请先完成一次事件结果生成。", "warn");
+      return next;
+    }
+    var storyEvent = buildStoryEventFromLegacy(next, Object.assign({}, source, {
+      story: storyText,
+      storytellerText: storyText,
+      v2Status: "chain_beat"
+    }));
+    var chain = getOpenNarrativeChain(next);
+    if (!chain || chain.status !== "open") {
+      var scene = normalizeSceneState(next.sceneState);
+      var summary = summarizeStoryForScene(storyEvent.storytellerText || storyText);
+      var now = new Date().toISOString();
+      var currentDate = trimText(next.calendarState && next.calendarState.currentDate);
+      var location = trimText(scene.currentLocationText || scene.locationName || next.locationState && next.locationState.currentLocation || "");
+      next.activeNarrativeChain = normalizeNarrativeChain({
+        chainId: makeId("chain"),
+        status: "open",
+        sourceEventId: storyEvent.id,
+        startedAt: now,
+        startedAtDate: currentDate,
+        currentDate: currentDate,
+        currentLocation: location,
+        currentDilemma: trimText(storyEvent.theme || storyEvent.selectedKeyword || summary || scene.focus || scene.currentAction || "当前结果留下的局部问题"),
+        localObjective: trimText(scene.sceneGoal || scene.objective || "围绕当前结果继续处理局部局面"),
+        sceneQuestion: trimText(summary || storyEvent.theme || "这个结果接下来如何继续？"),
+        closureConditions: [
+          "当前结果的直接后果已经得到回答",
+          "主要对话或动作自然完成",
+          "玩家主动收束本事件链",
+          "继续细看开始重复"
+        ],
+        beatCount: 0,
+        currentSceneTranscript: [],
+        shortTermNotes: [],
+        involvedNpcIds: ensureArray(scene.presentCharacters && scene.presentCharacters.length ? scene.presentCharacters : scene.activeNpcIds),
+        openThreads: ensureArray(next.openThreads).slice(-6),
+        lastBeatIds: [],
+        createdBy: reason || "result_stage_chain_start",
+        updatedAt: now
+      }, next);
+    }
+    chain = getOpenNarrativeChain(next);
+    if (chain && !chainContainsStoryResult(chain, storyEvent)) {
+      next = appendStoryEventToActiveChain(next, storyEvent);
+    }
+    return normalizePlayer(next);
+  }
+
   function buildChainBeatTranscriptEntry(chain, storyEvent, granularity){
     var text = pickStoryText(storyEvent) || stripInlineChoicePollution(trimText(storyEvent && (storyEvent.storytellerText || storyEvent.text || storyEvent.story)));
     return normalizeChainTranscriptEntry({
@@ -4719,6 +5359,7 @@
       summary: summarizeStoryForScene(text),
       playerAction: trimText(storyEvent && storyEvent.playerAction),
       sourceEventId: trimText(storyEvent && storyEvent.id),
+      sourceHash: trimText(storyEvent && storyEvent.sourceHash) || hashText(text),
       createdAt: new Date().toISOString()
     }, Math.max(0, Number(chain && chain.beatCount || 0)));
   }
@@ -4781,7 +5422,7 @@
       "地点：" + (normalized.currentLocation || "未设定"),
       "经过：",
       beatLines.length ? beatLines.join("\n") : "本事件链没有可记录的链内片段。",
-      "收束：本次链内片段已压缩为一条待确认正史事件；长期状态变化仍需用户确认。"
+      "收束：本次链内片段已压缩为一条正史事件草案；点击接受后将由运行时完成正文写入与默认状态结算。"
     ].join("\n");
   }
 
@@ -4789,6 +5430,9 @@
     var normalized = normalizePlayer(player || {});
     var sourceChain = normalizeNarrativeChain(chain || normalized.activeNarrativeChain || {}, normalized);
     var text = buildNarrativeChainClosureSummary(sourceChain);
+    var chainTranscriptText = ensureArray(sourceChain.currentSceneTranscript).map(function(beat){
+      return trimText(beat && (beat.text || beat.summary));
+    }).filter(Boolean).join("\n\n");
     var id = makeId("event_chain_closure");
     return {
       id: id,
@@ -4823,13 +5467,16 @@
         selectedKeyword: "事件链收束",
         selectedTimeStepDays: 0,
         isChainClosure: true,
-        sourceChainId: sourceChain.chainId
+        sourceChainId: sourceChain.chainId,
+        closureSummary: text,
+        chainTranscriptText: chainTranscriptText
       }
     };
   }
 
-  function closeNarrativeChainToPendingEvent(player, reason){
+  function closeNarrativeChainToPendingEvent(player, reason, options){
     var next = normalizePlayer(player || {});
+    var opts = options || {};
     var chain = getOpenNarrativeChain(next);
     if (!chain) return next;
     var closure = buildNarrativeChainClosureEvent(next, chain, reason || "user_chain_closure");
@@ -4837,7 +5484,7 @@
     next.draftHistory = ensureArray(next.draftHistory).filter(function(event){
       return !isObject(event) || event.id !== closure.id;
     }).concat([closure]);
-    next = acceptStoryText(next, closure.id);
+    next = acceptStoryText(next, closure.id, {skipPostAcceptanceExtraction: !!opts.skipPostAcceptanceExtraction});
     var afterChain = normalizeNarrativeChain(chain, next);
     afterChain.status = "closure_pending";
     afterChain.pendingClosureEventId = closure.id;
@@ -4847,6 +5494,23 @@
     next.sceneControl = normalizeSceneControl(Object.assign({}, next.sceneControl || {}, {
       generationMode: "chain_closure"
     }), next.immersionSettings, next.sceneState);
+    return normalizePlayer(next);
+  }
+
+  async function settleNarrativeChainClosureWithLegacyState(player, reason, currentYearEvent){
+    var next = currentYearEvent
+      ? startNarrativeChainFromStoryResult(player, currentYearEvent, reason || "result_stage_chain_commit")
+      : normalizePlayer(player || {});
+    if (next.__asv2AbortSave) return next;
+    next = closeNarrativeChainToPendingEvent(next, reason || "user_inline_chain_closure", {skipPostAcceptanceExtraction:true});
+    var chain = normalizeNarrativeChain(next.activeNarrativeChain, next);
+    var closureId = trimText(chain && chain.pendingClosureEventId);
+    if (closureId) {
+      next = await settleAcceptedStoryEventWithLegacyState(next, closureId);
+    }
+    if (next && !next.__asv2AbortSave) {
+      next = markNarrativeChainCommitted(next, chain && chain.chainId, closureId);
+    }
     return normalizePlayer(next);
   }
 
@@ -5046,7 +5710,7 @@
       proposedPatches: [],
       actualElapsedDaysSuggestion: detectActualElapsedDays(storyEvent.storytellerText),
       sourceStoryEvent: clonePlain(storyEvent || {}),
-      notes: "Phase 5 extraction_mode=" + mode + "；本 diff 用于确认正文进入正史，不自动写入长期状态。"
+      notes: "Phase 5 extraction_mode=" + mode + "；本 diff 用于运行时结算正文进入正史，不自动写入长期状态。"
     });
   }
 
@@ -5078,15 +5742,17 @@
       rejectedOrUnconfirmed: [],
       proposedPatches: patches,
       actualElapsedDaysSuggestion: detected,
-      notes: "Phase 5 light extractor：默认不写长期 canon；用户仍可确认正文进入正史。"
+      notes: "Phase 5 light extractor：默认不写长期 canon；主流程接受后正文进入正史。"
     });
   }
 
-  async function runPostAcceptanceExtraction(player, storyEvent){
+  async function runPostAcceptanceExtraction(player, storyEvent, options){
     var normalized = normalizePlayer(player || {});
     var event = isObject(storyEvent) ? storyEvent : {};
+    var opts = options || {};
     var pendingDiffs = [];
     var extractionMode = getEffectiveExtractionMode(normalized);
+    if (opts.forceLegacyStateSettlement && (extractionMode === "light" || extractionMode === "off")) extractionMode = "standard";
     if (extractionMode === "off") {
       var textOnly = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildTextAcceptanceOnlyDiff(event, "off"));
       normalized = normalizePlayer(textOnly.player || normalized);
@@ -5124,6 +5790,8 @@
     } catch (error) {
       pendingDiffs.push(buildExtractionErrorDiff(event, error));
     }
+    var explicitSettlementDiff = filterExplicitSettlementDiff(buildExplicitLegacySettlementDiff(normalized, event), pendingDiffs);
+    if (explicitSettlementDiff) pendingDiffs.push(explicitSettlementDiff);
     if (!pendingDiffs.length) {
       var fallback = buildFallbackDiffFromLegacyEvent(normalized, event);
       if (fallback) pendingDiffs.push(fallback);
@@ -5139,6 +5807,18 @@
     pendingDiffs = queuedDiffs;
     normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
     return {player: normalizePlayer(normalized), diffs: pendingDiffs};
+  }
+
+  async function settleAcceptedStoryEventWithLegacyState(player, sourceEventId){
+    var next = normalizePlayer(player || {});
+    var eventId = trimText(sourceEventId);
+    var event = findEventById(next, eventId);
+    if (!event || event.status !== "accepted_text_pending_state" || !isReviewableStoryEvent(event)) {
+      return applyAcceptedEventSettlement(next, eventId);
+    }
+    var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true});
+    next = normalizePlayer(extraction && extraction.player || next);
+    return applyAcceptedEventSettlement(next, eventId);
   }
 
   async function schedulePostAcceptanceExtraction(player, storyEvent){
@@ -5171,7 +5851,7 @@
           syncReactBridgeProfile(savedClosed);
           scheduleInlineControlsRender();
         }
-        console.warn("[A-Site V2] discarded late extraction because story event is no longer awaiting confirmation:", storyEvent.id);
+        console.warn("[A-Site V2] discarded late extraction because story event is no longer eligible for automatic settlement:", storyEvent.id);
         return;
       }
       next.pendingAcceptedEvents = ensureArray(next.pendingAcceptedEvents).map(function(event){
@@ -5182,7 +5862,7 @@
         syncReactBridgeProfile(savedNext);
         scheduleInlineControlsRender();
       }
-      showToast("已在正文接受后完成状态提取，请在主界面确认本次写入。", "warn");
+      showToast("已完成接受后状态提取；普通流程会在“接受命运并成长”时自动写入，状态细节可在 V2调试查看。");
     } catch (error) {
       showToast("接受后状态提取失败：" + (error && error.message || error), "warn");
     }
@@ -5503,7 +6183,7 @@
       selected.status = "rejected_due_to_closed_source_event";
       selected.reviewedAt = new Date().toISOString();
       selected.notes = appendNoteText(selected.notes, "source event 已确认、取消、拒绝或归档，禁止把晚到 extraction 写入正史。");
-      next = recordDiscardedLateExtraction(next, selected, "blocked applyConfirmedStateDiff because source event is no longer awaiting state confirmation");
+      next = recordDiscardedLateExtraction(next, selected, "blocked applyConfirmedStateDiff because source event is no longer eligible for automatic settlement");
       next.pendingStateDiffs = ensureArray(next.pendingStateDiffs).filter(function(diff){ return diff.id !== selected.id; });
       removePendingDiffsByEventId(sourceEventId);
       return normalizePlayer(next);
@@ -5736,6 +6416,17 @@
       showToast("检测到默认坏档写入（0岁/空历史），已阻止覆盖当前存档。请重新导入最近的完整存档后再测试。", "warn");
       normalized.__asv2AbortSave = true;
       return normalized;
+    }
+    if (!profileHasActiveSettlementWork(normalized) && latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, normalized) && profileLooksNewerForExport(latestSavedProfileCache, normalized)) {
+      db.close();
+      var protectedCache = normalizePlayer(latestSavedProfileCache);
+      console.warn("[A-Site V2] blocked stale profile save from overwriting newer accepted state:", {
+        incomingEventCount: Number(normalized.eventCount || 0) || 0,
+        cachedEventCount: Number(protectedCache.eventCount || 0) || 0,
+        incomingHistory: ensureArray(normalized.history).length,
+        cachedHistory: ensureArray(protectedCache.history).length
+      });
+      return protectedCache;
     }
     normalized.lastUpdated = Date.now();
     return new Promise(function(resolve, reject){
@@ -6208,7 +6899,7 @@
             var diff = buildDiffFromAgent(agentName, content, requestText, selectedZeroDays);
             if (diff) {
               addPendingDiff(diff);
-              showToast("已捕获 " + agentName + " 的状态更新建议，进入 A站V2 面板待确认。", "warn");
+              showToast("已捕获 " + agentName + " 的状态更新建议，主流程会自动结算；可在 V2 调试中审阅。", "warn");
             }
             var detected = selectedZeroDays ? detectActualElapsedDays(content) : null;
             if (detected && !diff) {
@@ -6409,6 +7100,52 @@
     };
   }
 
+  function profileIdentityMatches(a, b){
+    if (!isObject(a) || !isObject(b)) return false;
+    var aId = trimText(a.id || a.profileId);
+    var bId = trimText(b.id || b.profileId);
+    if (aId && bId && aId === bId) return true;
+    var aName = trimText(a.name || a.characterName || a.playerName);
+    var bName = trimText(b.name || b.characterName || b.playerName);
+    return !!(aName && bName && aName === bName);
+  }
+
+  function profileLooksNewerForExport(candidate, baseline){
+    if (!isObject(candidate)) return false;
+    if (!isObject(baseline)) return true;
+    var candidateUpdated = Number(candidate.lastUpdated || 0) || 0;
+    var baselineUpdated = Number(baseline.lastUpdated || 0) || 0;
+    if (candidateUpdated && baselineUpdated && candidateUpdated > baselineUpdated) return true;
+    if ((Number(candidate.eventCount || 0) || 0) > (Number(baseline.eventCount || 0) || 0)) return true;
+    if (ensureArray(candidate.history).length > ensureArray(baseline.history).length) return true;
+    if (ensureArray(candidate.canonHistory).length > ensureArray(baseline.canonHistory).length) return true;
+    return false;
+  }
+
+  function profileHasActiveSettlementWork(profile){
+    if (!isObject(profile)) return false;
+    var lastAcceptedId = trimText(profile.lastV2AcceptedStoryEventId);
+    if (lastAcceptedId && findEventById(profile, lastAcceptedId) && !storyEventIsAcceptedInProfile(profile, lastAcceptedId)) {
+      return true;
+    }
+    var activeEvents = []
+      .concat(profile.pendingAcceptedEvents || [])
+      .concat(profile.draftHistory || [])
+      .concat(pendingTextEventsForProfile(profile) || []);
+    if (activeEvents.some(function(event){
+      if (!isObject(event) || isClosedStoryEventForDiff(event)) return false;
+      var status = trimText(event.status);
+      var extractionStatus = trimText(event.extractionStatus);
+      return status === "accepted_text_pending_state" ||
+        extractionStatus === "scheduled" ||
+        extractionStatus === "pending_diff_ready" ||
+        extractionStatus === "extracting";
+    })) return true;
+    return pendingDiffsForProfile(profile).some(function(diff){
+      return diff && diff.status === "pending" && canAcceptLateExtractionDiffSync(profile, diff.sourceEventId);
+    });
+  }
+
   function patchNativeExport(){
     if (!window.HTMLAnchorElement || window.__aSiteV2ExportPatched) return;
     window.__aSiteV2ExportPatched = true;
@@ -6422,7 +7159,7 @@
           var parsed = JSON.parse(decodeURIComponent(encoded));
           if (parsed && parsed.player) {
             var parsedPlayer = normalizePlayer(parsed.player);
-            var cachedProfile = latestSavedProfileCache && trimText(latestSavedProfileCache.id || latestSavedProfileCache.profileId) === trimText(parsedPlayer.id || parsedPlayer.profileId) ? latestSavedProfileCache : null;
+            var cachedProfile = latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, parsedPlayer) && profileLooksNewerForExport(latestSavedProfileCache, parsedPlayer) ? latestSavedProfileCache : null;
             var normalizedPlayer = normalizePlayer(cachedProfile || parsedPlayer);
             normalizedPlayer = purgeClosedSourcePendingDiffs(normalizedPlayer, "导出前清理已关闭事件 pending diff。");
             normalizedPlayer.pendingStateDiffs = pendingDiffsForProfile(normalizedPlayer);
@@ -6725,14 +7462,14 @@
       return isReviewableStoryEvent(event);
     }).slice(0, 8);
     var cleanupButton = '<div class="asv2-mini-actions"><button type="button" data-action="cleanup-invalid-drafts">清理废稿/无效待审</button></div>';
-    if (!events.length) return '<section><h3>正文接受 / 废稿</h3><p class="asv2-note">暂无待审正文。故事结果生成后，未接受正文会先停留在待审状态，不会触发 DATA / ARCHIVIST。</p>' + cleanupButton + '</section>';
-    return '<section><h3>正文接受 / 废稿</h3>' + events.map(function(event){
+    if (!events.length) return '<section><h3>正文草稿 / 废稿调试</h3><p class="asv2-note">暂无需要修复的正文草稿。普通流程中，“接受命运并成长”会直接完成写入；本区只用于清理废稿、异常草稿或旧版本遗留待结算项。</p>' + cleanupButton + '</section>';
+    return '<section><h3>正文草稿 / 废稿调试</h3><p class="asv2-note">普通游玩不需要在这里二次确认。若这里出现条目，通常是旧版本遗留、异常草稿或开发调试数据。</p>' + events.map(function(event){
       return '<div class="asv2-event-card" data-event-id="' + escapeHtml(event.id) + '">' +
         '<div class="asv2-diff-title">' + escapeHtml(event.status || "draft") + ' · ' + escapeHtml(event.eventDate || event.eventYearText || "") + '</div>' +
         '<p class="asv2-note">sourceEventId：' + escapeHtml(event.id) + '；提取状态：' + escapeHtml(event.extractionStatus || "未提取") + '</p>' +
         '<p>' + escapeHtml(trimText(event.storytellerText).slice(0, 180) || "（无正文摘要）") + '</p>' +
         '<div class="asv2-diff-actions">' +
-          (event.status === "pending_text_review" || event.status === "draft" ? '<button data-action="accept-story-text" data-id="' + escapeHtml(event.id) + '">接受正文并提取状态</button>' : '') +
+          (event.status === "pending_text_review" || event.status === "draft" ? '<button data-action="accept-story-text" data-id="' + escapeHtml(event.id) + '">调试自动接受并结算</button>' : '') +
           '<button data-action="reject-story-text" data-id="' + escapeHtml(event.id) + '">拒绝正文 / 标记废稿</button>' +
           '<button data-action="reject-event-diffs" data-id="' + escapeHtml(event.id) + '">拒绝本事件全部 pending diff</button>' +
         '</div>' +
@@ -6742,8 +7479,8 @@
 
   function renderPendingDiffs(profile){
     var diffs = readPendingDiffs().filter(function(diff){ return diff && diff.status === "pending"; });
-    if (!diffs.length) return '<section><h3>状态更新确认</h3><p class="asv2-note">暂无待确认状态更新。DATA / ARCHIVIST 输出会在这里等待接受或拒绝。</p></section>';
-    return '<section><h3>状态更新确认</h3>' + diffs.map(function(diff){
+    if (!diffs.length) return '<section><h3>状态更新调试</h3><p class="asv2-note">暂无待处理状态调试项。主流程已改为“接受命运并成长”后自动结算；这里只保留异常修复、审计和手动回滚入口。</p></section>';
+    return '<section><h3>状态更新调试</h3><p class="asv2-note">普通游玩不需要在这里二次确认。下列项目仅用于开发者调试、异常残留修复或手动覆盖自动结算结果。</p>' + diffs.map(function(diff){
       var patches = ensureArray(diff.proposedPatches);
       var facts = ensureArray(diff.confirmedFacts);
       var speculations = ensureArray(diff.speculations);
@@ -6752,14 +7489,14 @@
       var storyEvent = findEventById(profile, diff.sourceEventId);
       return '<div class="asv2-diff" data-diff-id="' + escapeHtml(diff.id) + '">' +
         '<div class="asv2-diff-title">' + escapeHtml(diff.sourceAgent || "UNKNOWN") + ' · ' + escapeHtml(diff.createdAt || "") + '</div>' +
-        '<p class="asv2-note">sourceEventId：' + escapeHtml(diff.sourceEventId || "来源不明 / 旧流程残留 diff") + '；事件状态：' + escapeHtml(storyEvent && storyEvent.status || (diff.sourceEventId ? "未在本地事件表找到" : "未绑定")) + '。正文确认后，只有本面板中勾选的状态会写回。</p>' +
+        '<p class="asv2-note">sourceEventId：' + escapeHtml(diff.sourceEventId || "来源不明 / 旧流程残留 diff") + '；事件状态：' + escapeHtml(storyEvent && storyEvent.status || (diff.sourceEventId ? "未在本地事件表找到" : "未绑定")) + '。主流程不再要求用户在此确认；本面板只用于调试性手动写入或拒绝残留 diff。</p>' +
         (storyEvent && storyEvent.storytellerText ? '<p class="asv2-note">正文摘要：' + escapeHtml(trimText(storyEvent.storytellerText).slice(0, 160)) + '</p>' : '') +
         (facts.length ? '<h4>确认事实</h4>' + facts.map(renderFactEditor).join("") : '') +
         (speculations.length ? '<h4>推测/未确认线索</h4>' + speculations.map(renderSpeculationEditor).join("") : '') +
         (beliefs.length ? '<h4>NPC 认知/误认</h4>' + beliefs.map(renderBeliefEditor).join("") : '') +
         (patches.length ? '<h4>建议 patches</h4>' + patches.map(renderPatchEditor).join("") : '') +
         (time ? '<h4>实际时间跨度确认</h4><p class="asv2-note">系统按钮推进：' + escapeHtml(diff.systemTimeStepDays === undefined ? "未知" : diff.systemTimeStepDays + "天") + '；正文疑似实际推进由下方字段确认。</p>' + renderTimeEditor(time) : '') +
-        '<div class="asv2-diff-actions"><button data-action="accept-diff" data-id="' + escapeHtml(diff.id) + '">写入所选并确认正文</button><button data-action="reject-diff" data-id="' + escapeHtml(diff.id) + '">拒绝该 diff</button>' + (diff.sourceEventId ? '<button data-action="reject-event-diffs" data-id="' + escapeHtml(diff.sourceEventId) + '">拒绝本事件全部 diff</button>' : '') + '</div>' +
+        '<div class="asv2-diff-actions"><button data-action="accept-diff" data-id="' + escapeHtml(diff.id) + '">调试写入所选状态</button><button data-action="reject-diff" data-id="' + escapeHtml(diff.id) + '">拒绝该 diff</button>' + (diff.sourceEventId ? '<button data-action="reject-event-diffs" data-id="' + escapeHtml(diff.sourceEventId) + '">拒绝本事件全部 diff</button>' : '') + '</div>' +
       '</div>';
     }).join("") + '</section>';
   }
@@ -6971,7 +7708,7 @@
     var sceneReason = scene.sceneEndReason || settings.sceneEndReason || "";
     return '<section><h3>Phase 5 沉浸式模拟层</h3>' +
       '<p class="asv2-note">粒度控制只控制时间跨度、场景尺度、选项尺度和状态提取强度；输出长度是软建议，可用 detailLevel 或临时长度覆盖。</p>' +
-      '<p class="asv2-note">shortTermSceneMemory 是非正史的短期镜头缓存，只服务当前 sceneId 的连续性。它不会自动进入 history / storySummary / dynamicWorldSetting / loreEntries / npcProfiles。只有用户确认 diff 或执行“离场并压缩短期记忆”时，才可能升级为 sceneMemoryArchive / recentInteractions 等长期状态。</p>' +
+      '<p class="asv2-note">shortTermSceneMemory 是非正史的短期镜头缓存，只服务当前 sceneId 的连续性。它不会自动进入 history / storySummary / dynamicWorldSetting / loreEntries / npcProfiles。只有主流程接受并完成运行时结算，或执行“离场并压缩短期记忆”时，才可能升级为 sceneMemoryArchive / recentInteractions 等长期状态。</p>' +
       '<div class="asv2-warn">' + escapeHtml(transitionWarning || "当前镜头跳转无警告。") + '</div>' +
       '<div class="asv2-module-row">' +
         '<label class="asv2-field"><span>镜头粒度</span><select id="asv2-granularity">' +
@@ -7309,16 +8046,29 @@
     return '<button type="button" class="asv2-inline-time' + (disabled ? ' asv2-inline-disabled' : '') + '" data-asv2-inline-action="time-jump" data-mode="' + escapeHtml(mode) + '"' + (disabled ? ' disabled aria-disabled="true"' : '') + '><span>' + escapeHtml(label) + '</span>' + (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</button>';
   }
 
+  function renderInlineResultContinuationControls(profile, disabled){
+    var normalized = profile ? normalizePlayer(profile) : null;
+    var candidate = getCurrentStoryResultCandidate();
+    if (!normalized || !candidate) return "";
+    var chain = getOpenNarrativeChain(normalized);
+    var preview = summarizeStoryForScene(candidate.storyText || "").slice(0, 180);
+    return [
+      '<div class="asv2-chain-panel asv2-result-chain-panel" data-current-result-id="' + escapeHtml(candidate.eventId) + '">',
+        '<div class="asv2-chain-title"><b>当前结果可继续</b><span>' + (chain ? '将接入当前事件链' : '可把这段正文作为事件链起点') + '</span></div>',
+        '<div class="asv2-chain-question"><b>结果摘要</b>：' + escapeHtml(preview || "当前正文结果") + '</div>',
+        '<div class="asv2-chain-actions">',
+          '<button type="button" data-asv2-inline-action="result-chain-continue" data-granularity="micro_action"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>继续细看这一刻</button>',
+          '<button type="button" data-asv2-inline-action="result-chain-continue" data-granularity="small_scene"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>围绕这段推进一小段</button>',
+        '</div>',
+      '</div>'
+    ].join("");
+  }
+
   function renderInlineNarrativeChainControls(profile, disabled){
     var normalized = profile ? normalizePlayer(profile) : null;
     var chain = normalized ? getOpenNarrativeChain(normalized) : null;
     if (!chain) {
-      return [
-        '<div class="asv2-chain-panel asv2-chain-idle">',
-          '<div><b>事件链</b><span>可把当前局部场景连续游玩多轮，收束后再一次性写入正史。</span></div>',
-          '<button type="button" data-asv2-inline-action="chain-start"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>开启事件链</button>',
-        '</div>'
-      ].join("");
+      return "";
     }
     var transcript = ensureArray(chain.currentSceneTranscript).slice(-5);
     var transcriptHtml = transcript.length ? transcript.map(function(beat){
@@ -7336,9 +8086,9 @@
         '<ul class="asv2-chain-transcript">' + transcriptHtml + '</ul>',
         warning,
         '<div class="asv2-chain-actions">',
-          '<button type="button" data-asv2-inline-action="chain-continue" data-granularity="micro_action"' + (disabled || chain.status !== "open" ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>继续细看</button>',
-          '<button type="button" data-asv2-inline-action="chain-continue" data-granularity="small_scene"' + (disabled || chain.status !== "open" ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>推进一小段</button>',
-          '<button type="button" data-asv2-inline-action="chain-close"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>收束本事件</button>',
+          '<button type="button" data-asv2-inline-action="chain-continue" data-granularity="micro_action"' + (disabled || chain.status !== "open" ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>继续当前链：细看</button>',
+          '<button type="button" data-asv2-inline-action="chain-continue" data-granularity="small_scene"' + (disabled || chain.status !== "open" ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>继续当前链：推进一小段</button>',
+          '<button type="button" data-asv2-inline-action="chain-close"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>收束链并写入正史</button>',
           '<button type="button" data-asv2-inline-action="chain-cancel"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>取消本事件链</button>',
           (chain.status === "closure_pending" ? '<button type="button" data-asv2-inline-action="chain-keep-draft"' + (disabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>保留草稿但不推进</button>' : ''),
         '</div>',
@@ -7346,92 +8096,63 @@
     ].join("");
   }
 
-  function getInlinePendingConfirmation(profile){
-    var normalized = profile ? normalizePlayer(profile) : null;
-    if (!normalized) return null;
-    var acceptedEventIds = {};
-    var acceptedEvents = ensureArray(normalized.history).concat(normalized.canonHistory || []);
-    acceptedEvents.forEach(function(event){
-      if (!isObject(event)) return;
-      if (event.id) acceptedEventIds[event.id] = true;
-      if (event.sourceEventId) acceptedEventIds[event.sourceEventId] = true;
+  function mergeEventDiffsForConfirmation(diffs, event){
+    var list = ensureArray(diffs).map(normalizeStateDiff).filter(Boolean);
+    if (!list.length) return null;
+    if (list.length === 1) {
+      var single = Object.assign({}, list[0]);
+      if (event && event.id) {
+        single.sourceEventId = event.id;
+        single.sourceStoryEvent = clonePlain(event);
+      }
+      return normalizeStateDiff(single);
+    }
+    var first = list[0];
+    var sourceAgents = [];
+    var notes = [];
+    var combined = Object.assign({}, first, {
+      id: makeId("state_diff"),
+      sourceEventId: trimText(event && event.id || first.sourceEventId),
+      sourceAgent: "",
+      status: "pending",
+      confirmedFacts: [],
+      speculations: [],
+      npcBeliefs: [],
+      rejectedOrUnconfirmed: [],
+      proposedPatches: [],
+      rawModelOutput: list.map(function(diff){
+        return {
+          id: diff.id,
+          sourceAgent: diff.sourceAgent,
+          rawModelOutput: diff.rawModelOutput
+        };
+      }),
+      sourceStoryEvent: event ? clonePlain(event) : first.sourceStoryEvent
     });
-    var pendingAcceptedIds = {};
-    ensureArray(normalized.pendingAcceptedEvents).forEach(function(event){
-      if (isObject(event) && event.id) pendingAcceptedIds[event.id] = true;
+    list.forEach(function(diff){
+      var agent = trimText(diff.sourceAgent);
+      if (agent && sourceAgents.indexOf(agent) < 0) sourceAgents.push(agent);
+      if (trimText(diff.notes)) notes.push(trimText(diff.notes));
+      combined.confirmedFacts = combined.confirmedFacts.concat(ensureArray(diff.confirmedFacts));
+      combined.speculations = combined.speculations.concat(ensureArray(diff.speculations));
+      combined.npcBeliefs = combined.npcBeliefs.concat(ensureArray(diff.npcBeliefs));
+      combined.rejectedOrUnconfirmed = combined.rejectedOrUnconfirmed.concat(ensureArray(diff.rejectedOrUnconfirmed));
+      combined.proposedPatches = combined.proposedPatches.concat(ensureArray(diff.proposedPatches));
+      if (!combined.actualElapsedDaysSuggestion && diff.actualElapsedDaysSuggestion) combined.actualElapsedDaysSuggestion = diff.actualElapsedDaysSuggestion;
+      if (combined.systemTimeStepDays === undefined && diff.systemTimeStepDays !== undefined) combined.systemTimeStepDays = diff.systemTimeStepDays;
     });
-    var events = uniqueEvents([])
-      .concat(normalized.pendingAcceptedEvents || [])
-      .concat(normalized.draftHistory || [])
-      .concat(pendingTextEventsForProfile(normalized))
-      .filter(function(event){
-        if (!isObject(event) || acceptedEventIds[event.id]) return false;
-        if (acceptedEvents.some(function(accepted){ return storyEventMatchesAcceptedSignature(event, accepted); })) return false;
-        if (event.status !== "accepted_text_pending_state") return false;
-        if (!isReviewableStoryEvent(event)) return false;
-        return pendingAcceptedIds[event.id] || isRecentlyAcceptedStoryEvent(event) || storyEventAppearsInMainPage(event);
-      });
-    if (!events.length) return null;
-    events.sort(function(a, b){
-      var aTime = Date.parse(a.extractedAt || a.acceptedAt || a.createdAt || a.updatedAt || "") || 0;
-      var bTime = Date.parse(b.extractedAt || b.acceptedAt || b.createdAt || b.updatedAt || "") || 0;
-      return aTime - bTime;
-    });
-    var event = events[events.length - 1];
-    var diffs = pendingDiffsForProfile(normalized).filter(function(diff){
-      return diff && diff.status === "pending" && diff.sourceEventId === event.id;
-    });
-    var patchModules = [];
-    var selectedPatchCount = 0;
-    var speculativeCount = 0;
-    diffs.forEach(function(diff){
-      ensureArray(diff.proposedPatches).forEach(function(patch){
-        if (patch && patch.selected !== false) {
-          selectedPatchCount += 1;
-          if (patch.module && patchModules.indexOf(patch.module) < 0) patchModules.push(patch.module);
-        }
-      });
-      ensureArray(diff.speculations).forEach(function(item){ if (item && item.selected) speculativeCount += 1; });
-    });
-    return {
-      event: event,
-      diffs: diffs,
-      selectedPatchCount: selectedPatchCount,
-      speculativeCount: speculativeCount,
-      patchModules: patchModules
-    };
+    combined.sourceAgent = sourceAgents.join("+") || trimText(first.sourceAgent);
+    combined.notes = notes.filter(function(note, index){
+      return note && notes.indexOf(note) === index;
+    }).join("\n") || trimText(first.notes);
+    return normalizeStateDiff(combined);
   }
 
-  function renderInlineStateConfirmation(profile){
-    var pending = getInlinePendingConfirmation(profile);
-    if (!pending) return "";
-    var event = pending.event;
-    var diffs = pending.diffs;
-    var modules = pending.patchModules.length ? pending.patchModules.join(" / ") : "暂无默认状态 patch";
-    var diffText = diffs.length ? (diffs.length + " 个 pending diff，默认将写入 " + pending.selectedPatchCount + " 项 selected patch") : "状态提取尚未完成；可先只接受正文。";
-    var timeText = diffs.some(function(diff){ return !!diff.actualElapsedDaysSuggestion; }) ? "检测到正文时间跨度建议，请在详情或 V2调试中核对。" : "主时间以主界面时间推进选择为准；API 时间检测只作异常纠偏。";
-    return [
-      '<div class="asv2-inline-confirm" data-source-event-id="' + escapeHtml(event.id) + '">',
-        '<div class="asv2-inline-confirm-title">本次写入确认</div>',
-        '<p><b>正文</b>：该事件将进入正式 history / canonHistory。</p>',
-        '<p><b>时间</b>：' + escapeHtml(timeText) + '</p>',
-        '<p><b>状态变化</b>：' + escapeHtml(diffText) + '；模块：' + escapeHtml(modules) + '</p>',
-        '<p class="asv2-inline-confirm-story">' + escapeHtml(trimText(event.storytellerText).slice(0, 160)) + '</p>',
-        '<div class="asv2-inline-confirm-actions">',
-          '<button type="button" data-asv2-inline-action="confirm-write" data-event-id="' + escapeHtml(event.id) + '">确认写入</button>',
-          '<button type="button" data-asv2-inline-action="text-only" data-event-id="' + escapeHtml(event.id) + '">只接受正文，不写状态</button>',
-          '<button type="button" data-asv2-inline-action="cancel-accept" data-event-id="' + escapeHtml(event.id) + '">取消接受</button>',
-          '<button type="button" data-asv2-inline-action="advanced">修改详情 / V2调试</button>',
-        '</div>',
-      '</div>'
-    ].join("");
-  }
-
-  function applyInlineEventConfirmation(player, sourceEventId, mode){
+  function applyAcceptedEventSettlement(player, sourceEventId){
     var next = normalizePlayer(player || {});
     var event = findEventById(next, sourceEventId);
     if (!event || event.status !== "accepted_text_pending_state" || !isReviewableStoryEvent(event)) {
-      showToast("未找到可确认的 accepted_text_pending_state 事件。", "warn");
+      showToast("未找到可结算的 accepted_text_pending_state 事件。", "warn");
       next.__asv2AbortSave = true;
       return next;
     }
@@ -7444,49 +8165,72 @@
     var diffs = mergeStateDiffs(readPendingDiffs(), next.pendingStateDiffs);
     var eventDiffs = diffs.filter(function(diff){ return diff && diff.status === "pending" && diff.sourceEventId === event.id; });
     var storedDiffs = diffs.slice();
-    if (mode === "text-only" || !eventDiffs.length) {
-      eventDiffs.forEach(function(diff){
-        diff.status = "rejected_text_only";
-        diff.reviewedAt = new Date().toISOString();
-        diff.notes = appendNoteText(diff.notes, "用户在主流程选择只接受正文，不写模型推断状态。");
-      });
-      var textOnlyDiff = buildTextAcceptanceOnlyDiff(event, "inline_text_only");
-      textOnlyDiff.status = "pending";
-      textOnlyDiff.sourceEventId = event.id;
-      next = applyConfirmedStateDiff(next, textOnlyDiff);
+    var explicitEventDiff = filterExplicitSettlementDiff(buildExplicitLegacySettlementDiff(next, event), eventDiffs);
+    if (explicitEventDiff) {
+      explicitEventDiff = normalizeStateDiff(Object.assign({}, explicitEventDiff, {
+        sourceEventId: event.id,
+        sourceStoryEvent: clonePlain(event)
+      }));
+      eventDiffs = eventDiffs.concat([explicitEventDiff]);
+      storedDiffs = storedDiffs.filter(function(diff){
+        return !diff || diff.id !== explicitEventDiff.id;
+      }).concat([explicitEventDiff]);
+    }
+    if (!eventDiffs.length) {
+      var legacyFallbackDiff = buildFallbackDiffFromLegacyEvent(next, event);
+      var hasFallbackState = legacyFallbackDiff && (
+        ensureArray(legacyFallbackDiff.proposedPatches).length ||
+        !!legacyFallbackDiff.actualElapsedDaysSuggestion
+      );
+      if (hasFallbackState) {
+        next.pendingStateDiffs = [legacyFallbackDiff];
+        next = applyConfirmedStateDiff(next, legacyFallbackDiff);
+        storedDiffs = storedDiffs.filter(function(diff){ return !diff || diff.sourceEventId !== event.id; }).concat([Object.assign({}, legacyFallbackDiff, {status:"accepted", reviewedAt:new Date().toISOString()})]);
+        writePendingDiffs(storedDiffs.filter(function(diff){ return diff && diff.status !== "accepted"; }));
+        removePendingDiffsByEventId(event.id);
+        next = clearProfilePendingEventQueues(next, event.id);
+        next.pendingStateDiffs = pendingDiffsForProfile(next);
+        return normalizePlayer(next);
+      }
+      var textOnlyFallbackDiff = buildTextAcceptanceOnlyDiff(event, "accepted_event_no_state_diff_fallback");
+      textOnlyFallbackDiff.status = "pending";
+      textOnlyFallbackDiff.sourceEventId = event.id;
+      next = applyConfirmedStateDiff(next, textOnlyFallbackDiff);
       if (!storyEventIsAcceptedInProfile(next, event.id, event)) {
-        var normalizedTextOnlyDiff = normalizeStateDiff(textOnlyDiff);
-        next = finalizeAcceptedEvent(next, normalizedTextOnlyDiff);
-        next.stateDiffHistory = ensureArray(next.stateDiffHistory).concat([Object.assign({}, normalizedTextOnlyDiff, {
+        var normalizedFallbackTextOnly = normalizeStateDiff(textOnlyFallbackDiff);
+        next = finalizeAcceptedEvent(next, normalizedFallbackTextOnly);
+        next.stateDiffHistory = ensureArray(next.stateDiffHistory).concat([Object.assign({}, normalizedFallbackTextOnly, {
           status: "accepted",
           reviewedAt: new Date().toISOString(),
-          notes: appendNoteText(normalizedTextOnlyDiff.notes, "主流程确认写入保底 finalize；无模型状态 patch。")
+          notes: appendNoteText(normalizedFallbackTextOnly.notes, "主流程自动写入保底 finalize；未找到模型或 legacy 状态 patch。")
         })]);
       }
-      storedDiffs = storedDiffs.map(function(diff){
-        return diff && diff.sourceEventId === event.id && diff.status === "pending" ? Object.assign({}, diff, {status:"rejected_text_only", reviewedAt:new Date().toISOString()}) : diff;
-      });
-      writePendingDiffs(storedDiffs.filter(function(diff){ return diff && diff.status !== "accepted"; }));
       removePendingDiffsByEventId(event.id);
       next = clearProfilePendingEventQueues(next, event.id);
       next.pendingStateDiffs = pendingDiffsForProfile(next);
       return normalizePlayer(next);
     }
-    eventDiffs.forEach(function(diff){
-      next.pendingStateDiffs = eventDiffs.slice();
-      next = applyConfirmedStateDiff(next, diff);
+    var combinedEventDiff = mergeEventDiffsForConfirmation(eventDiffs, event);
+    if (combinedEventDiff) {
+      next.pendingStateDiffs = [combinedEventDiff];
+      next = applyConfirmedStateDiff(next, combinedEventDiff);
       storedDiffs = storedDiffs.map(function(item){
-        return item && item.id === diff.id ? Object.assign({}, diff, {status:"accepted", reviewedAt:new Date().toISOString()}) : item;
+        if (!item || item.sourceEventId !== event.id || item.status !== "pending") return item;
+        return Object.assign({}, item, {
+          status: "accepted_merged",
+          reviewedAt: new Date().toISOString(),
+          mergedIntoStateDiffId: combinedEventDiff.id
+        });
       });
       writePendingDiffs(storedDiffs);
-    });
+    }
     if (!storyEventIsAcceptedInProfile(next, event.id, event)) {
-      var fallbackDiff = normalizeStateDiff(buildTextAcceptanceOnlyDiff(event, "inline_confirm_fallback"));
+      var fallbackDiff = normalizeStateDiff(buildTextAcceptanceOnlyDiff(event, "accepted_event_settlement_fallback"));
       next = finalizeAcceptedEvent(next, fallbackDiff);
       next.stateDiffHistory = ensureArray(next.stateDiffHistory).concat([Object.assign({}, fallbackDiff, {
         status: "accepted",
         reviewedAt: new Date().toISOString(),
-        notes: appendNoteText(fallbackDiff.notes, "主流程确认写入保底 finalize；状态 diff 未能写入正文正史。")
+        notes: appendNoteText(fallbackDiff.notes, "主流程自动写入保底 finalize；状态 diff 未能写入正文正史。")
       })]);
     }
     removePendingDiffsByEventId(event.id);
@@ -7509,34 +8253,31 @@
     var suggestions = formatInlineSuggestions(control.suggestedNextGranularities);
     var microNote = control.granularityPreset === "micro_action" ? '<span class="asv2-inline-hint">微动作通常不推进日期。</span>' : '';
     var summary = "当前：" + granularityLabel(control.granularityPreset) + " · " + dateText + " · " + sceneText + (actionText && actionText !== "未指定" ? " · " + actionText : "");
-    var confirmHtml = "";
-    var hasPendingInlineConfirmation = false;
-    var blockedNote = "";
-    var fateButtonClass = hasPendingInlineConfirmation ? "asv2-inline-fate asv2-inline-disabled" : "asv2-inline-fate";
+    var inlineControlsDisabled = false;
+    var fateButtonClass = "asv2-inline-fate";
     return [
       '<section id="a-site-v2-inline-control" class="asv2-inline-control" aria-label="Phase 5 镜头与时间控制">',
-        '<div class="asv2-inline-head"><div><b>镜头 / 时间推进</b><span>Phase 5 日常控制</span></div><div class="asv2-inline-head-actions"><button type="button" class="' + fateButtonClass + '" data-asv2-inline-action="fate-intervention"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true"' : '') + '>命运干涉</button><button type="button" class="asv2-inline-debug" data-asv2-inline-action="advanced">V2调试</button></div></div>',
+        '<div class="asv2-inline-head"><div><b>镜头 / 时间推进</b><span>Phase 5 日常控制</span></div><div class="asv2-inline-head-actions"><button type="button" class="' + fateButtonClass + '" data-asv2-inline-action="fate-intervention"' + (inlineControlsDisabled ? ' disabled aria-disabled="true"' : '') + '>命运干涉</button><button type="button" class="asv2-inline-debug" data-asv2-inline-action="advanced">V2调试</button></div></div>',
         (terminal ? '<div class="asv2-inline-terminal"><b>角色已死亡 / 当前人生已结束</b><span>数据层 isAlive=false。若原站未即时切换终局，请刷新页面；继续生成前应先回滚或开启新人生。</span></div>' : ''),
         '<div class="asv2-inline-summary">' + escapeHtml(summary) + '</div>',
-        renderInlineNarrativeChainControls(normalized, hasPendingInlineConfirmation),
-        confirmHtml,
-        blockedNote,
+        renderInlineResultContinuationControls(normalized, inlineControlsDisabled),
+        renderInlineNarrativeChainControls(normalized, inlineControlsDisabled),
         '<div class="asv2-inline-main-row"><span class="asv2-inline-label">镜头</span><div class="asv2-inline-row asv2-inline-granularity">',
-            renderInlineGranularityButton(control.granularityPreset, "micro_action", hasPendingInlineConfirmation),
-            renderInlineGranularityButton(control.granularityPreset, "small_scene", hasPendingInlineConfirmation),
-            renderInlineGranularityButton(control.granularityPreset, "normal_event", hasPendingInlineConfirmation),
-            renderInlineGranularityButton(control.granularityPreset, "montage", hasPendingInlineConfirmation),
-            renderInlineGranularityButton(control.granularityPreset, "major_timeskip", hasPendingInlineConfirmation),
+            renderInlineGranularityButton(control.granularityPreset, "micro_action", inlineControlsDisabled),
+            renderInlineGranularityButton(control.granularityPreset, "small_scene", inlineControlsDisabled),
+            renderInlineGranularityButton(control.granularityPreset, "normal_event", inlineControlsDisabled),
+            renderInlineGranularityButton(control.granularityPreset, "montage", inlineControlsDisabled),
+            renderInlineGranularityButton(control.granularityPreset, "major_timeskip", inlineControlsDisabled),
           '</div>',
         '</div>',
         '<div class="asv2-inline-main-row"><span class="asv2-inline-label">时间</span><div class="asv2-inline-row asv2-inline-times">',
-            renderInlineTimeButton("current_scene", "当前场景", "0天", hasPendingInlineConfirmation),
-            renderInlineTimeButton("later_same_day", "稍后", "0天", hasPendingInlineConfirmation),
-            renderInlineTimeButton("tomorrow", "明天", "+1天", hasPendingInlineConfirmation),
-            renderInlineTimeButton("one_week", "一周后", "+7天", hasPendingInlineConfirmation),
-            renderInlineTimeButton("next_month_natural", "下一自然月", "按月历", hasPendingInlineConfirmation),
-            renderInlineTimeButton("next_year_natural", "下一年", "按年历", hasPendingInlineConfirmation),
-            '<label class="asv2-inline-custom' + (hasPendingInlineConfirmation ? ' asv2-inline-disabled' : '') + '">自定义 <input id="asv2-inline-custom-days" type="number" value="1" min="0" step="1"' + (hasPendingInlineConfirmation ? ' disabled' : '') + '> 天 <button type="button" data-asv2-inline-action="time-jump" data-mode="custom_days"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true"' : '') + '>执行</button></label>',
+            renderInlineTimeButton("current_scene", "当前场景", "0天", inlineControlsDisabled),
+            renderInlineTimeButton("later_same_day", "稍后", "0天", inlineControlsDisabled),
+            renderInlineTimeButton("tomorrow", "明天", "+1天", inlineControlsDisabled),
+            renderInlineTimeButton("one_week", "一周后", "+7天", inlineControlsDisabled),
+            renderInlineTimeButton("next_month_natural", "下一自然月", "按月历", inlineControlsDisabled),
+            renderInlineTimeButton("next_year_natural", "下一年", "按年历", inlineControlsDisabled),
+            '<label class="asv2-inline-custom' + (inlineControlsDisabled ? ' asv2-inline-disabled' : '') + '">自定义 <input id="asv2-inline-custom-days" type="number" value="1" min="0" step="1"' + (inlineControlsDisabled ? ' disabled' : '') + '> 天 <button type="button" data-asv2-inline-action="time-jump" data-mode="custom_days"' + (inlineControlsDisabled ? ' disabled aria-disabled="true"' : '') + '>执行</button></label>',
           '</div>',
         '</div>',
         '<details class="asv2-inline-details"><summary>详情 / 高级选项</summary>',
@@ -7547,7 +8288,7 @@
             '<label class="asv2-inline-check"><input id="asv2-inline-lock-scene" type="checkbox" data-asv2-inline-field="lockCurrentScene"' + (control.lockCurrentScene ? ' checked' : '') + '> 锁定当前场景</label>',
             '<label class="asv2-inline-check"><input id="asv2-inline-allow-jump" type="checkbox" data-asv2-inline-field="allowTimeJump"' + (control.allowTimeJump ? ' checked' : '') + '> 允许时间跳跃</label>',
           '</div>',
-          '<div class="asv2-inline-foot">' + microNote + '<button type="button" data-asv2-inline-action="leave-scene"' + (hasPendingInlineConfirmation ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>离场并压缩</button></div>',
+          '<div class="asv2-inline-foot">' + microNote + '<button type="button" data-asv2-inline-action="leave-scene"' + (inlineControlsDisabled ? ' disabled aria-disabled="true" class="asv2-inline-disabled"' : '') + '>离场并压缩</button></div>',
         '</details>',
       '</section>'
     ].join("");
@@ -7567,6 +8308,84 @@
       if (options && options.phase && typeof bridge.setPhase === "function") bridge.setPhase(options.phase);
     } catch (error) {
       console.warn("[A-Site V2] React bridge sync failed:", error);
+    }
+  }
+
+  function waitForReactBridgeTick(){
+    return new Promise(function(resolve){
+      try {
+        if (typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(function(){ window.setTimeout(resolve, 0); });
+          return;
+        }
+      } catch (_) {}
+      window.setTimeout(resolve, 0);
+    });
+  }
+
+  function summarizeReactBridgeSnapshot(snapshot){
+    var player = snapshot && snapshot.player;
+    return {
+      phase: trimText(snapshot && snapshot.phase),
+      profileId: trimText(player && (player.id || player.profileId)),
+      historyLength: ensureArray(player && player.history).length,
+      canonHistoryLength: ensureArray(player && player.canonHistory).length,
+      eventCount: Number(player && player.eventCount || 0) || 0,
+      pendingAcceptedEvents: ensureArray(player && player.pendingAcceptedEvents).length,
+      pendingStateDiffs: ensureArray(player && player.pendingStateDiffs).length,
+      hasCurrentYearEvent: !!(snapshot && snapshot.currentYearEvent)
+    };
+  }
+
+  function reactBridgeSnapshotMatchesProfile(snapshot, profile, acceptedEventId){
+    var player = snapshot && snapshot.player;
+    if (!isObject(player) || !isObject(profile)) return false;
+    var playerId = trimText(player.id || player.profileId);
+    var profileId = trimText(profile.id || profile.profileId);
+    if (playerId && profileId && playerId !== profileId) return false;
+    if (acceptedEventId && !storyEventIsAcceptedInProfile(player, acceptedEventId)) return false;
+    var expectedEventCount = Number(profile.eventCount || 0) || 0;
+    var actualEventCount = Number(player.eventCount || 0) || 0;
+    if (actualEventCount < expectedEventCount) return false;
+    if (ensureArray(player.history).length < ensureArray(profile.history).length) return false;
+    if (ensureArray(player.canonHistory).length < ensureArray(profile.canonHistory).length) return false;
+    return true;
+  }
+
+  async function syncReactBridgeProfileAndVerify(profile, options){
+    var bridge = window.__ASiteV2ReactBridge;
+    var opts = options || {};
+    var result = {
+      bridgeExists: !!bridge,
+      synced: false,
+      attempts: 0,
+      acceptedEventId: trimText(opts.acceptedEventId),
+      snapshot: null
+    };
+    if (!bridge || !profile) return result;
+    function applySync(){
+      if (typeof bridge.setPlayer === "function") bridge.setPlayer(profile);
+      if (opts.clearCurrentEvent && typeof bridge.setCurrentYearEvent === "function") bridge.setCurrentYearEvent(null);
+      if (opts.phase && typeof bridge.setPhase === "function") bridge.setPhase(opts.phase);
+    }
+    try {
+      for (var attempt = 0; attempt < 3; attempt += 1) {
+        result.attempts = attempt + 1;
+        applySync();
+        await waitForReactBridgeTick();
+        var snapshot = typeof bridge.getSnapshot === "function" ? bridge.getSnapshot() : null;
+        result.snapshot = summarizeReactBridgeSnapshot(snapshot);
+        if (reactBridgeSnapshotMatchesProfile(snapshot, profile, result.acceptedEventId)) {
+          result.synced = true;
+          return result;
+        }
+      }
+      console.warn("[A-Site V2] React bridge sync did not verify exported state:", result);
+      return result;
+    } catch (error) {
+      result.error = error && error.message || String(error || "unknown");
+      console.warn("[A-Site V2] React bridge verified sync failed:", error);
+      return result;
     }
   }
 
@@ -7853,6 +8672,33 @@
     }
   }
 
+  function sanitizeCurrentBridgeStoryChoicePollution(){
+    var snapshot = getReactBridgeSnapshotSafe();
+    var event = snapshot && snapshot.currentYearEvent;
+    if (!isObject(event)) return false;
+    var changed = false;
+    var nextEvent = Object.assign({}, event);
+    ["story", "storytellerText", "storyText", "resultText"].forEach(function(field){
+      if (typeof nextEvent[field] !== "string") return;
+      var cleaned = stripInlineChoicePollution(nextEvent[field]);
+      if (cleaned && cleaned !== nextEvent[field].trim()) {
+        nextEvent[field] = cleaned;
+        changed = true;
+      }
+    });
+    if (!changed) return false;
+    try {
+      var bridge = window.__ASiteV2ReactBridge;
+      if (bridge && typeof bridge.setCurrentYearEvent === "function") {
+        bridge.setCurrentYearEvent(nextEvent);
+        return true;
+      }
+    } catch (error) {
+      console.warn("[A-Site V2] current story choice-pollution cleanup failed:", error);
+    }
+    return false;
+  }
+
   function formatCalendarYearTextForDate(player, dateValue){
     var date = parseDate(dateValue);
     if (!date) return trimText(player && player.currentYear);
@@ -7929,6 +8775,7 @@
   async function renderInlineControlsNow(){
     var profile = await getActiveProfile().catch(function(){ return null; });
     if (profile) {
+      var bridgeStoryCleaned = sanitizeCurrentBridgeStoryChoicePollution();
       var visibleNarrativePollution = documentHasVisibleInlineChoicePollution();
       var storedNarrativePollution = narrativeCollectionsContainInlineChoicePollution(profile);
       var normalizedProfile = purgeClosedSourcePendingDiffs(normalizePlayer(profile), "主控条渲染前清理已关闭事件 pending diff。");
@@ -7946,7 +8793,8 @@
         trimText(profile.pendingInlineTimeJumpContext && profile.pendingInlineTimeJumpContext.newDate) !== trimText(normalizedProfile.pendingInlineTimeJumpContext && normalizedProfile.pendingInlineTimeJumpContext.newDate) ||
         beforeRepairDate !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
         storedNarrativePollution ||
-        visibleNarrativePollution;
+        visibleNarrativePollution ||
+        bridgeStoryCleaned;
       profile = normalizedProfile;
       if (needsProfileSync && !inlineProfileSyncInProgress) {
         inlineProfileSyncInProgress = true;
@@ -7983,7 +8831,9 @@
     var wrapper = document.createElement("div");
     wrapper.innerHTML = renderInlineImmersionControls(profile);
     var nextNode = wrapper.firstElementChild;
-    if (existing) existing.replaceWith(nextNode);
+    if (existing && nextNode && existing.outerHTML === nextNode.outerHTML) {
+      nextNode = existing;
+    } else if (existing) existing.replaceWith(nextNode);
     else if (ref.position === "after") ref.element.parentElement.insertBefore(nextNode, ref.element.nextSibling);
     else ref.element.parentElement.insertBefore(nextNode, ref.element);
     syncFloatingDebugButtonVisibility(true);
@@ -8007,7 +8857,7 @@
       return null;
     }
     var latest = normalizePlayer(profile);
-    var mutated = mutator(latest);
+    var mutated = await mutator(latest);
     if (mutated && mutated.__asv2AbortSave) return null;
     var next = preserveInlineTimeJumpContext(normalizePlayer(mutated || latest), mutated || latest);
     var saved = await saveProfile(next);
@@ -8017,8 +8867,8 @@
     }
     if (saved) {
       syncReactBridgeProfile(saved, {
-        clearCurrentEvent: !!opts.sourceEventId,
-        phase: saved.isAlive === false ? "GAME_OVER" : undefined
+        clearCurrentEvent: !!(opts.sourceEventId || opts.clearCurrentEvent),
+        phase: opts.phase || (saved.isAlive === false ? "GAME_OVER" : undefined)
       });
     }
     await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] inline controls immediate render failed:", error); });
@@ -8223,10 +9073,48 @@
       showToast("当前操作暂不可用。", "warn");
       return;
     }
-    if (action === "chain-start") {
+    if (action === "result-chain-continue") {
+      var resultCandidate = getCurrentStoryResultCandidate();
+      if (!resultCandidate) {
+        showToast("当前没有可继续的正文结果。请先完成事件结果生成。", "warn");
+        return;
+      }
+      var resultGranularity = canonicalGranularity(target.getAttribute("data-granularity") || "micro_action");
+      var savedResultChainProfile = await mutateInlineProfile(function(profile){
+        var next = startNarrativeChainFromStoryResult(profile, resultCandidate.event, "result_stage_chain_continue");
+        if (next.__asv2AbortSave) return next;
+        next = setInlineControlFields(next, {
+          granularityPreset: resultGranularity,
+          extractionMode: "auto",
+          lockCurrentScene: true,
+          allowTimeJump: false,
+          generationMode: "chain_continue"
+        });
+        next.pendingInlineTimeJumpContext = {
+          mode: "current_scene",
+          oldDate: next.calendarState && next.calendarState.currentDate || "",
+          newDate: next.calendarState && next.calendarState.currentDate || "",
+          days: 0,
+          targetYearText: next.currentYear,
+          targetAgeText: next.age,
+          generationMode: "chain_continue",
+          sourceResultEventId: resultCandidate.eventId,
+          createdAt: new Date().toISOString()
+        };
+        return normalizePlayer(next);
+      }, resultGranularity === "micro_action" ? "已把当前结果接入事件链；继续细看下一拍。" : "已把当前结果接入事件链；推进下一小段。", {clearCurrentEvent:true});
+      if (savedResultChainProfile) startNativeEventFromV2TimeJump(0, savedResultChainProfile, { clearCurrentEvent: true });
+      return;
+    }
+    if (action === "result-chain-commit") {
+      var commitCandidate = getCurrentStoryResultCandidate();
+      if (!commitCandidate) {
+        showToast("当前没有可收束的正文结果。", "warn");
+        return;
+      }
       await mutateInlineProfile(function(profile){
-        return startNarrativeChain(profile, "user_inline_chain_start");
-      }, "已开启事件链。接下来可用“继续细看”或“推进一小段”连续游玩。");
+        return settleNarrativeChainClosureWithLegacyState(profile, "result_stage_chain_commit", commitCandidate.event);
+      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE"});
       return;
     }
     if (action === "chain-continue") {
@@ -8257,8 +9145,9 @@
     }
     if (action === "chain-close") {
       await mutateInlineProfile(function(profile){
-        return closeNarrativeChainToPendingEvent(profile, "user_inline_chain_closure");
-      }, "事件链已收束，请在主界面确认写入。");
+        var currentResult = getCurrentStoryResultCandidate();
+        return settleNarrativeChainClosureWithLegacyState(profile, "user_inline_chain_closure", currentResult && currentResult.event);
+      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE"});
       return;
     }
     if (action === "chain-cancel") {
@@ -8306,20 +9195,6 @@
       // pendingInlineTimeJumpContext for prompt/acceptance/history, and start
       // the native event from the already-advanced profile with a neutral step.
       startNativeEventFromV2TimeJump(0, null);
-      return;
-    }
-    if (action === "confirm-write" || action === "text-only") {
-      var confirmEventId = target.getAttribute("data-event-id") || "";
-      await mutateInlineProfile(function(profile){
-        return applyInlineEventConfirmation(profile, confirmEventId, action === "text-only" ? "text-only" : "default");
-      }, action === "text-only" ? "已只接受正文进入正史，模型推断状态未写入。" : "已确认写入本次正文与默认状态变化。", {sourceEventId:confirmEventId});
-      return;
-    }
-    if (action === "cancel-accept") {
-      var cancelEventId = target.getAttribute("data-event-id") || "";
-      await mutateInlineProfile(function(profile){
-        return rejectStoryText(profile, cancelEventId, "用户在主流程取消接受。");
-      }, "已取消接受，本次正文不会进入正史。", {sourceEventId:cancelEventId});
       return;
     }
     if (action === "leave-scene") {
@@ -8486,6 +9361,7 @@
     }, data || {});
     try {
       console.info("[A-Site V2 AcceptChain]", safe);
+      console.info("[A-Site V2 AcceptChain JSON] " + JSON.stringify(safe));
     } catch (_) {}
     try {
       var bridge = window.__ASiteV2ReactBridge;
@@ -8592,10 +9468,11 @@
       var accepted = interceptLegacyAccept(snapshot.player, currentEventForAccept, {autoCommit:true});
       var acceptedStoryEventId = trimText(accepted.lastV2AcceptedStoryEventId);
       var chainAfterAccept = getOpenNarrativeChain(accepted);
-      var isChainBeat = !!(chainAfterAccept && chainAfterAccept.status === "open" && !getInlinePendingConfirmation(accepted));
+      var isQueuedForSettlement = eventIsQueuedForStateSettlement(accepted, acceptedStoryEventId);
+      var isChainBeat = !!(chainAfterAccept && chainAfterAccept.status === "open" && acceptedStoryEventId && !isQueuedForSettlement);
       var autoCommitted = false;
       if (acceptedStoryEventId && !isChainBeat) {
-        var committed = applyInlineEventConfirmation(accepted, acceptedStoryEventId, "default");
+        var committed = await settleAcceptedStoryEventWithLegacyState(accepted, acceptedStoryEventId);
         if (committed && !committed.__asv2AbortSave) {
           accepted = committed;
           autoCommitted = storyEventIsAcceptedInProfile(accepted, acceptedStoryEventId);
@@ -8603,7 +9480,7 @@
       }
       var saved = await saveProfile(accepted);
       if (!saved || saved.__asv2AbortSave) return;
-      syncReactBridgeProfile(saved, {clearCurrentEvent:true, phase:"IDLE"});
+      var syncResult = await syncReactBridgeProfileAndVerify(saved, {clearCurrentEvent:true, phase:"IDLE", acceptedEventId: acceptedStoryEventId});
       await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] inline controls render after accept failed:", error); });
       scheduleInlineControlsRender();
       logAcceptChainDiagnostics({
@@ -8618,17 +9495,28 @@
         storyTextSource: storyTextSource,
         storyTextPreview: storyText.slice(0, 40),
         isInvalidStoryTextResult: false,
+        queuedForStateSettlement: isQueuedForSettlement,
+        treatedAsChainBeat: isChainBeat,
         autoCommittedToCanon: autoCommitted,
+        savedHistoryLength: ensureArray(saved.history).length,
+        savedCanonHistoryLength: ensureArray(saved.canonHistory).length,
+        savedEventCount: Number(saved.eventCount || 0) || 0,
+        savedLatestHistoryId: trimText(latestAcceptedHistoryEntry(saved) && latestAcceptedHistoryEntry(saved).id),
+        savedStateDiffHistoryLength: ensureArray(saved.stateDiffHistory).length,
+        savedPatchHistoryLength: ensureArray(saved.patchHistory).length,
+        reactBridgeSynced: syncResult && syncResult.synced === true,
+        reactBridgeSyncAttempts: syncResult && syncResult.attempts || 0,
+        reactBridgeSnapshot: syncResult && syncResult.snapshot || null,
         pendingAcceptedAfter: ensureArray(saved.pendingAcceptedEvents).length,
         pendingStateDiffsAfter: ensureArray(saved.pendingStateDiffs).length
       });
       var savedChain = getOpenNarrativeChain(saved);
-      if (savedChain && savedChain.status === "open" && !getInlinePendingConfirmation(saved)) {
+      if (savedChain && savedChain.status === "open" && acceptedStoryEventId && !eventIsQueuedForStateSettlement(saved, acceptedStoryEventId) && !storyEventIsAcceptedInProfile(saved, acceptedStoryEventId)) {
         showToast("已加入事件链 beat；链内片段暂不写入正史。");
       } else if (autoCommitted) {
         showToast("已接受命运并写入正史。");
       } else {
-        showToast("已接收正文；如需处理状态细节，可打开 V2调试。");
+        showToast("已接收正文；状态细节仅保留在 V2调试中供审计。");
       }
     } catch (error) {
       console.error("[A-Site V2] legacy accept capture failed:", error);
@@ -8652,7 +9540,7 @@
     if (window.MutationObserver && document.body) {
       var observer = new MutationObserver(function(){
         installCharacterGenerationDirectiveField();
-        if (!document.getElementById("a-site-v2-inline-control")) scheduleInlineControlsRender();
+        scheduleInlineControlsRender();
       });
       observer.observe(document.body, {childList:true, subtree:true});
     }
@@ -8994,11 +9882,12 @@
           showToast("未找到本地档案，无法接受正文。", "warn");
           return;
         }
-        var acceptedTextProfile = acceptStoryText(acceptProfile, id);
-        var savedAcceptedText = await saveProfile(acceptedTextProfile);
+        var acceptedTextProfile = acceptStoryText(acceptProfile, id, {skipPostAcceptanceExtraction:true});
+        var settledTextProfile = await settleAcceptedStoryEventWithLegacyState(acceptedTextProfile, id);
+        var savedAcceptedText = await saveProfile(settledTextProfile);
         panel.innerHTML = renderPanel(savedAcceptedText);
         attachPanelEvents(panel, savedAcceptedText);
-        showToast("正文已接受；DATA / ARCHIVIST 会在接受后提取为 pending diff。", "warn");
+        showToast("已通过调试入口自动接受并结算；普通流程无需二次确认。");
         return;
       }
       if (action === "reject-story-text") {
@@ -9068,7 +9957,7 @@
         var savedNext = await saveProfile(next);
         panel.innerHTML = renderPanel(savedNext);
         attachPanelEvents(panel, savedNext);
-        showToast("已写入所选状态并确认正文为正史。刷新主界面后可同步显示。");
+        showToast("已通过调试面板写入所选状态；普通流程会在接受命运时自动结算。");
       }
     };
     panel.oninput = function(event){
@@ -9110,7 +9999,6 @@
       ".asv2-debug-note{margin:0 0 10px;padding:10px 12px;border:1px solid #dfc49a;background:#fff8ec;border-radius:9px;color:#6b5438;font-size:12px;line-height:1.6}.asv2-debug-details{border:1px solid #ead7b9;border-radius:10px;background:#fffdf8;margin-bottom:10px;overflow:visible;min-width:0;max-width:100%;width:100%;box-sizing:border-box}.asv2-debug-details>summary{cursor:pointer;padding:10px 12px;font-weight:800;color:#5b3a1f;background:#f7ead4}.asv2-debug-details[open]>summary{border-bottom:1px solid #ead7b9}.asv2-debug-content{display:block;min-width:0;max-width:100%;width:100%;box-sizing:border-box;overflow-wrap:anywhere}.asv2-debug-content>section{border:0!important;border-radius:0!important;margin:0!important}",
       ".asv2-character-generation-directive{margin:10px 0;padding:10px 12px;border:1px solid var(--ui-border,rgba(185,152,95,.32));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 86%,transparent);color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-character-generation-directive label{display:block;margin-bottom:6px;font-size:13px}.asv2-character-generation-directive textarea{width:100%;box-sizing:border-box;min-height:78px;border:1px solid var(--ui-border,#dbc29b);border-radius:10px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 94%,transparent);color:var(--ui-text,#2b241d);padding:8px 9px;font:13px/1.5 system-ui,'Microsoft YaHei',sans-serif;resize:vertical}.asv2-character-generation-directive small{display:block;margin-top:6px;color:var(--ui-muted,#736553);font-size:11px;line-height:1.5}",
       ".asv2-inline-control{position:relative;z-index:2;margin:16px 0;padding:14px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:18px;background:linear-gradient(180deg,color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 92%,transparent),color-mix(in srgb,var(--ui-panel,#fffaf0) 96%,transparent));box-shadow:var(--ui-shadow-soft,0 12px 28px rgba(86,60,31,.12));color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-inline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.asv2-inline-head b{display:block;font-size:14px}.asv2-inline-head span{display:block;color:var(--ui-muted,#736553);font-size:11px;margin-top:2px}.asv2-inline-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}.asv2-inline-debug,.asv2-inline-fate,.asv2-inline-foot button,.asv2-inline-custom button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:14px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-inline-fate{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}.asv2-inline-summary{font-size:13px;font-weight:800;line-height:1.5;color:var(--ui-text,#2b241d);padding:8px 10px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:12px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 78%,transparent)}.asv2-inline-blocked-note{margin:8px 0 0;padding:8px 10px;border:1px dashed #c7954d;border-radius:12px;background:#fffaf0;color:#7a5524;font-size:12px;line-height:1.5}.asv2-inline-disabled{opacity:.48!important;cursor:not-allowed!important;filter:saturate(.75)}.asv2-inline-terminal{display:grid;gap:4px;margin:8px 0;padding:10px 12px;border:1px solid #ef8f6f;border-radius:12px;background:#fff1ed;color:#7c2d12;font-size:12px;line-height:1.5}.asv2-inline-terminal b{font-size:13px}.asv2-inline-main-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;margin-top:10px}.asv2-inline-label{font-size:12px;font-weight:900;color:var(--ui-muted,#736553);padding-top:9px}.asv2-inline-status,.asv2-inline-row,.asv2-inline-scene,.asv2-inline-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}.asv2-inline-status span,.asv2-inline-scene span,.asv2-inline-hint{border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 62%,transparent);border-radius:10px;padding:6px 9px;font-size:12px;color:var(--ui-muted,#736553)}.asv2-inline-scene{align-items:stretch}.asv2-inline-scene span{line-height:1.5}.asv2-inline-chip,.asv2-inline-time{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:36px;border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:999px;padding:7px 12px;font-weight:800;cursor:pointer}.asv2-inline-chip-active{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d;border-color:var(--ui-border-strong,#dfc087)}.asv2-inline-time{flex-direction:column;align-items:flex-start;border-radius:14px;min-width:86px}.asv2-inline-time small{font-size:10px;color:var(--ui-muted,#736553)}.asv2-inline-details{margin-top:10px;border-top:1px solid var(--ui-border,rgba(185,152,95,.28));padding-top:8px}.asv2-inline-details>summary{cursor:pointer;color:var(--ui-muted,#736553);font-weight:800;font-size:12px}.asv2-inline-settings label,.asv2-inline-custom{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:14px;padding:6px 8px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 72%,transparent);font-size:12px}.asv2-inline-settings select,.asv2-inline-custom input{border:1px solid var(--ui-border,#dbc29b);border-radius:9px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);padding:5px 7px}.asv2-inline-custom input{width:68px}",
-      ".asv2-inline-confirm{margin:10px 0;padding:12px;border:1px solid #d6aa63;border-radius:14px;background:#fff7e8;color:var(--ui-text,#2b241d);box-shadow:0 8px 20px rgba(92,63,29,.08)}.asv2-inline-confirm-title{font-weight:900;margin-bottom:6px}.asv2-inline-confirm p{margin:5px 0;font-size:12px;line-height:1.55;color:var(--ui-muted,#736553)}.asv2-inline-confirm-story{border-left:3px solid #d6aa63;padding-left:8px;color:var(--ui-text,#2b241d)!important}.asv2-inline-confirm-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}.asv2-inline-confirm-actions button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 92%,transparent);color:var(--ui-text,#2b241d);border-radius:12px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-inline-confirm-actions button:first-child{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}",
       ".asv2-chain-panel{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid var(--ui-border,rgba(185,152,95,.34));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 74%,transparent);font-size:12px;line-height:1.55}.asv2-chain-idle{grid-template-columns:minmax(0,1fr) auto;align-items:center}.asv2-chain-panel b{font-weight:900}.asv2-chain-panel span,.asv2-chain-meta{color:var(--ui-muted,#736553)}.asv2-chain-idle button,.asv2-chain-actions button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);border-radius:12px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-chain-title{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.asv2-chain-question{padding:7px 9px;border-left:3px solid #c7954d;background:rgba(255,250,240,.58);border-radius:8px}.asv2-chain-meta{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-transcript{margin:0;padding-left:18px;color:var(--ui-muted,#736553)}.asv2-chain-transcript li{margin:3px 0}.asv2-chain-warning{padding:8px 10px;border:1px dashed #c46d29;border-radius:10px;background:#fff3e4;color:#7a3d12}.asv2-chain-actions{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-actions button:first-child{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}",
       "@media (max-width:640px){#a-site-v2-button{right:18px;bottom:86px}#a-site-v2-panel{left:12px;right:12px;bottom:140px;width:auto;max-height:calc(100vh - 160px)}}"
     ].join("\n");
@@ -9184,12 +10072,13 @@
     compressAndLeaveScene: compressAndLeaveScene,
     readPendingDiffs: readPendingDiffs,
     writePendingDiffs: writePendingDiffs,
+    buildDiffFromAgent: buildDiffFromAgent,
+    buildExplicitLegacySettlementDiff: buildExplicitLegacySettlementDiff,
     readPendingTextEvents: readPendingTextEvents,
     writePendingTextEvents: writePendingTextEvents,
     isInvalidStoryText: isInvalidStoryText,
     cleanupInvalidDrafts: cleanupInvalidDrafts,
-    getInlinePendingConfirmation: getInlinePendingConfirmation,
-    applyInlineEventConfirmation: applyInlineEventConfirmation,
+    applyAcceptedEventSettlement: applyAcceptedEventSettlement,
     normalizeStateDiff: normalizeStateDiff,
     applyProposedPatch: applyProposedPatch,
     applyTimeSuggestion: applyTimeSuggestion,
