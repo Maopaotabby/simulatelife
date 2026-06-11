@@ -21,6 +21,7 @@
   var latestPendingTextEvents = [];
   var latestRetrievalLog = [];
   var latestSavedProfileCache = null;
+  var recentCommittedWriteGuard = null;
 
   var GRANULARITY_POLICIES = {
     micro_action: {
@@ -6275,7 +6276,12 @@
     var base = clonePlain(profile || {});
     if (isObject(checkpoint)) {
       if (isObject(checkpoint.playerState)) {
-        base = Object.assign({}, base, clonePlain(checkpoint.playerState));
+        var checkpointState = clonePlain(checkpoint.playerState);
+        if (!profileCommittedProgressAhead(base, checkpointState)) {
+          base = Object.assign({}, base, checkpointState);
+        } else {
+          base.__asv2SkippedOlderCheckpointId = checkpoint.id || "";
+        }
       }
       base.id = trimText(base.id || checkpoint.profileId || profile && profile.id);
       base.name = trimText(base.name || checkpoint.playerName || checkpoint.name);
@@ -6424,15 +6430,27 @@
   async function saveProfile(profile){
     var db = await openDb();
     var normalized = preserveInlineTimeJumpContext(normalizePlayer(profile), profile);
+    var previousCache = latestSavedProfileCache ? normalizePlayer(latestSavedProfileCache) : null;
     if (isLikelyDefaultBlankProfile(normalized)) {
       db.close();
       showToast("检测到默认坏档写入（0岁/空历史），已阻止覆盖当前存档。请重新导入最近的完整存档后再测试。", "warn");
       normalized.__asv2AbortSave = true;
       return normalized;
     }
-    if (!profileHasActiveSettlementWork(normalized) && latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, normalized) && profileLooksNewerForExport(latestSavedProfileCache, normalized)) {
+    if (previousCache && profileIdentityMatches(previousCache, normalized) && profileFallsBehindCommittedGuard(normalized) && profileCommittedProgressAhead(previousCache, normalized)) {
       db.close();
-      var protectedCache = normalizePlayer(latestSavedProfileCache);
+      console.warn("[A-Site V2] blocked stale profile save from overwriting recently committed accepted state:", {
+        incomingEventCount: Number(normalized.eventCount || 0) || 0,
+        cachedEventCount: Number(previousCache.eventCount || 0) || 0,
+        incomingHistory: ensureArray(normalized.history).length,
+        cachedHistory: ensureArray(previousCache.history).length,
+        guard: recentCommittedWriteGuard
+      });
+      return previousCache;
+    }
+    if (!profileHasActiveSettlementWork(normalized) && previousCache && profileIdentityMatches(previousCache, normalized) && profileLooksNewerForExport(previousCache, normalized)) {
+      db.close();
+      var protectedCache = normalizePlayer(previousCache);
       console.warn("[A-Site V2] blocked stale profile save from overwriting newer accepted state:", {
         incomingEventCount: Number(normalized.eventCount || 0) || 0,
         cachedEventCount: Number(protectedCache.eventCount || 0) || 0,
@@ -6449,6 +6467,9 @@
       tx.onerror = function(){ reject(tx.error || new Error("Save profile failed")); };
     }).then(function(saved){
       latestSavedProfileCache = normalizePlayer(saved);
+      if (previousCache && profileIdentityMatches(previousCache, saved) && profileCommittedProgressAhead(saved, previousCache)) {
+        rememberCommittedWriteGuard(saved, "saveProfile committed progress ahead of previous cache");
+      }
       return syncLatestCheckpointForProfile(saved).then(function(){ return saved; });
     });
   }
@@ -7133,6 +7154,49 @@
     if (ensureArray(candidate.history).length > ensureArray(baseline.history).length) return true;
     if (ensureArray(candidate.canonHistory).length > ensureArray(baseline.canonHistory).length) return true;
     return false;
+  }
+
+  function profileCommittedProgressAhead(candidate, baseline){
+    if (!isObject(candidate) || !isObject(baseline)) return false;
+    if ((Number(candidate.eventCount || 0) || 0) > (Number(baseline.eventCount || 0) || 0)) return true;
+    if (ensureArray(candidate.history).length > ensureArray(baseline.history).length) return true;
+    if (ensureArray(candidate.canonHistory).length > ensureArray(baseline.canonHistory).length) return true;
+    if (ensureArray(candidate.stateDiffHistory).length > ensureArray(baseline.stateDiffHistory).length) return true;
+    if (ensureArray(candidate.patchHistory).length > ensureArray(baseline.patchHistory).length) return true;
+    return false;
+  }
+
+  function profileFallsBehindCommittedGuard(profile){
+    var guard = recentCommittedWriteGuard;
+    if (!guard || !isObject(profile)) return false;
+    if (Date.now() > Number(guard.expiresAt || 0)) {
+      recentCommittedWriteGuard = null;
+      return false;
+    }
+    var profileId = trimText(profile.id || profile.profileId);
+    if (guard.profileId && profileId && guard.profileId !== profileId) return false;
+    if ((Number(profile.eventCount || 0) || 0) < guard.eventCount) return true;
+    if (ensureArray(profile.history).length < guard.historyLength) return true;
+    if (ensureArray(profile.canonHistory).length < guard.canonHistoryLength) return true;
+    if (ensureArray(profile.stateDiffHistory).length < guard.stateDiffHistoryLength) return true;
+    if (ensureArray(profile.patchHistory).length < guard.patchHistoryLength) return true;
+    return false;
+  }
+
+  function rememberCommittedWriteGuard(profile, reason){
+    if (!isObject(profile)) return;
+    recentCommittedWriteGuard = {
+      profileId: trimText(profile.id || profile.profileId),
+      latestHistoryId: trimText(latestAcceptedHistoryEntry(profile) && latestAcceptedHistoryEntry(profile).id),
+      eventCount: Number(profile.eventCount || 0) || 0,
+      historyLength: ensureArray(profile.history).length,
+      canonHistoryLength: ensureArray(profile.canonHistory).length,
+      stateDiffHistoryLength: ensureArray(profile.stateDiffHistory).length,
+      patchHistoryLength: ensureArray(profile.patchHistory).length,
+      reason: reason || "committed accepted story event",
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 5 * 60 * 1000
+    };
   }
 
   function profileHasActiveSettlementWork(profile){
