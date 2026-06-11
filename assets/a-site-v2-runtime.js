@@ -1616,6 +1616,19 @@
         return Object.assign({id: "event_legacy_" + index, status: "accepted"}, entry);
       });
     }
+    var declaredTerminal = next.isDead === true || next.isAlive === false || (next.v2TerminalState && next.v2TerminalState.status === "game_over");
+    if (declaredTerminal) {
+      next.isAlive = false;
+      next.isDead = true;
+      next.v2TerminalState = Object.assign({
+        status: "game_over",
+        reason: "导入或旧档标准化检测到死亡 / 终局状态。",
+        sourceEventId: "",
+        confirmedAt: new Date().toISOString()
+      }, isObject(next.v2TerminalState) ? next.v2TerminalState : {}, {status:"game_over"});
+    } else if (next.isAlive !== false) {
+      next.isAlive = next.isAlive === undefined ? true : next.isAlive;
+    }
     next = restoreHistoryFromCanonHistory(next);
     next.history = sanitizeNarrativeTextArray(next.history);
     next.canonHistory = sanitizeNarrativeTextArray(next.canonHistory);
@@ -7179,6 +7192,55 @@
     };
   }
 
+  function extractImportPlayerPayload(payload){
+    if (!payload) return null;
+    if (payload.player && isObject(payload.player)) return payload.player;
+    if (payload.saveData && payload.saveData.player && isObject(payload.saveData.player)) return payload.saveData.player;
+    if (payload.data && payload.data.player && isObject(payload.data.player)) return payload.data.player;
+    if (payload.id || payload.name || payload.history || payload.canonHistory) return payload;
+    return null;
+  }
+
+  function profileDeclaresTerminal(profile){
+    return !!(profile && (profile.isDead === true || profile.isAlive === false || (profile.v2TerminalState && profile.v2TerminalState.status === "game_over")));
+  }
+
+  function patchNativeTerminalImportPersistence(){
+    if (window.__aSiteV2TerminalImportPatched) return;
+    window.__aSiteV2TerminalImportPatched = true;
+    document.addEventListener("change", function(event){
+      var input = event && event.target;
+      if (!input || String(input.type || "").toLowerCase() !== "file" || !input.files || !input.files.length) return;
+      var file = input.files[0];
+      if (!file || !/\.json$/i.test(file.name || "")) return;
+      var reader = new FileReader();
+      reader.onload = function(loadEvent){
+        try {
+          var text = loadEvent && loadEvent.target ? loadEvent.target.result : "";
+          var parsed = JSON.parse(String(text || ""));
+          var importedPlayer = extractImportPlayerPayload(parsed);
+          if (!profileDeclaresTerminal(importedPlayer)) return;
+          var normalized = normalizePlayer(importedPlayer);
+          if (!profileDeclaresTerminal(normalized)) return;
+          window.setTimeout(function(){
+            saveProfile(normalized).then(function(saved){
+              if (!saved || saved.__asv2AbortSave) return;
+              latestSavedProfileCache = normalizePlayer(saved);
+              return syncReactBridgeProfileAndVerify(saved, {clearCurrentEvent:true, phase:"GAME_OVER"}).then(function(){
+                return renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] terminal import inline render failed:", error); });
+              });
+            }).then(function(){
+              showToast("已持久化导入的终局存档。");
+            }).catch(function(error){
+              console.warn("[A-Site V2] terminal import persistence failed:", error);
+            });
+          }, 250);
+        } catch (error) {}
+      };
+      try { reader.readAsText(file, "UTF-8"); } catch (error) {}
+    }, true);
+  }
+
   function buildPromptPreview(profile){
     return buildContextBlock(profile || {}, {requestText: latestPatchedPrompt}) + "\n\n【最近注入到 API 的完整消息预览】\n" + (latestPatchedPrompt || "尚未捕获 API 请求。");
   }
@@ -10031,6 +10093,7 @@
   patchIndexedDb();
   patchFetch();
   patchNativeExport();
+  patchNativeTerminalImportPersistence();
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", installPanel);
   } else {
