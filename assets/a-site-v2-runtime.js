@@ -6437,6 +6437,19 @@
       normalized.__asv2AbortSave = true;
       return normalized;
     }
+    var guardSnapshot = getCommittedWriteGuardSnapshot(normalized);
+    if (guardSnapshot && profileCommittedProgressAhead(guardSnapshot, normalized)) {
+      db.close();
+      latestSavedProfileCache = normalizePlayer(guardSnapshot);
+      console.warn("[A-Site V2] blocked stale profile save with committed guard snapshot:", {
+        incomingEventCount: Number(normalized.eventCount || 0) || 0,
+        guardEventCount: Number(guardSnapshot.eventCount || 0) || 0,
+        incomingHistory: ensureArray(normalized.history).length,
+        guardHistory: ensureArray(guardSnapshot.history).length,
+        guard: recentCommittedWriteGuard
+      });
+      return guardSnapshot;
+    }
     if (previousCache && profileIdentityMatches(previousCache, normalized) && profileFallsBehindCommittedGuard(normalized) && profileCommittedProgressAhead(previousCache, normalized)) {
       db.close();
       console.warn("[A-Site V2] blocked stale profile save from overwriting recently committed accepted state:", {
@@ -7185,18 +7198,33 @@
 
   function rememberCommittedWriteGuard(profile, reason){
     if (!isObject(profile)) return;
+    var normalized = normalizePlayer(profile);
     recentCommittedWriteGuard = {
-      profileId: trimText(profile.id || profile.profileId),
-      latestHistoryId: trimText(latestAcceptedHistoryEntry(profile) && latestAcceptedHistoryEntry(profile).id),
-      eventCount: Number(profile.eventCount || 0) || 0,
-      historyLength: ensureArray(profile.history).length,
-      canonHistoryLength: ensureArray(profile.canonHistory).length,
-      stateDiffHistoryLength: ensureArray(profile.stateDiffHistory).length,
-      patchHistoryLength: ensureArray(profile.patchHistory).length,
+      profileId: trimText(normalized.id || normalized.profileId),
+      profileName: trimText(normalized.name || normalized.characterName || normalized.playerName),
+      latestHistoryId: trimText(latestAcceptedHistoryEntry(normalized) && latestAcceptedHistoryEntry(normalized).id),
+      eventCount: Number(normalized.eventCount || 0) || 0,
+      historyLength: ensureArray(normalized.history).length,
+      canonHistoryLength: ensureArray(normalized.canonHistory).length,
+      stateDiffHistoryLength: ensureArray(normalized.stateDiffHistory).length,
+      patchHistoryLength: ensureArray(normalized.patchHistory).length,
+      profileSnapshot: clonePlain(normalized),
       reason: reason || "committed accepted story event",
       createdAt: Date.now(),
       expiresAt: Date.now() + 5 * 60 * 1000
     };
+  }
+
+  function getCommittedWriteGuardSnapshot(profile){
+    var guard = recentCommittedWriteGuard;
+    if (!guard || !isObject(profile)) return null;
+    if (!profileFallsBehindCommittedGuard(profile)) return null;
+    var profileId = trimText(profile.id || profile.profileId);
+    var profileName = trimText(profile.name || profile.characterName || profile.playerName);
+    if (guard.profileId && profileId && guard.profileId !== profileId) return null;
+    if (!profileId && guard.profileName && profileName && guard.profileName !== profileName) return null;
+    if (!isObject(guard.profileSnapshot)) return null;
+    return normalizePlayer(guard.profileSnapshot);
   }
 
   function profileHasActiveSettlementWork(profile){
@@ -7236,8 +7264,18 @@
           var parsed = JSON.parse(decodeURIComponent(encoded));
           if (parsed && parsed.player) {
             var parsedPlayer = normalizePlayer(parsed.player);
-            var cachedProfile = latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, parsedPlayer) && profileLooksNewerForExport(latestSavedProfileCache, parsedPlayer) ? latestSavedProfileCache : null;
+            var guardProfile = getCommittedWriteGuardSnapshot(parsedPlayer);
+            var cachedProfile = guardProfile || (latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, parsedPlayer) && profileLooksNewerForExport(latestSavedProfileCache, parsedPlayer) ? latestSavedProfileCache : null);
             var normalizedPlayer = normalizePlayer(cachedProfile || parsedPlayer);
+            if (guardProfile) {
+              latestSavedProfileCache = normalizePlayer(guardProfile);
+              console.warn("[A-Site V2] native export replaced stale player payload with committed guard snapshot:", {
+                incomingEventCount: Number(parsedPlayer.eventCount || 0) || 0,
+                guardEventCount: Number(guardProfile.eventCount || 0) || 0,
+                incomingHistory: ensureArray(parsedPlayer.history).length,
+                guardHistory: ensureArray(guardProfile.history).length
+              });
+            }
             normalizedPlayer = purgeClosedSourcePendingDiffs(normalizedPlayer, "导出前清理已关闭事件 pending diff。");
             normalizedPlayer.pendingStateDiffs = pendingDiffsForProfile(normalizedPlayer);
             var mergedLogs = mergeSessionLogs(parsed.logs, getRuntimeLogMirror(normalizedPlayer.id));
