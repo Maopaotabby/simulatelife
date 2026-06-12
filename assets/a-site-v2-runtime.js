@@ -10481,50 +10481,64 @@
     }
   }
 
-  async function renderInlineControlsNow(){
+  async function renderInlineControlsNow(options){
+    var opts = options || {};
     var startedAt = runtimeNow();
-    var timingDetail = {status:"ok", hasProfile:false, needsProfileSync:false, inserted:false, missingAnchor:false};
+    var providedProfile = opts.profile && isObject(opts.profile) ? opts.profile : null;
+    var timingDetail = {
+      status:"ok",
+      hasProfile:false,
+      profileSource: providedProfile ? "provided" : "active-profile",
+      profileRepairSkipped: opts.skipProfileRepair === true,
+      needsProfileSync:false,
+      inserted:false,
+      missingAnchor:false
+    };
     try {
-      var profile = await getActiveProfile().catch(function(){ return null; });
+      var profile = providedProfile
+        ? (opts.alreadyNormalized === true ? providedProfile : normalizePlayer(providedProfile))
+        : await getActiveProfile().catch(function(){ return null; });
       if (profile) {
         timingDetail.hasProfile = true;
-        var bridgeStoryCleaned = sanitizeCurrentBridgeStoryChoicePollution();
-        var visibleNarrativePollution = documentHasVisibleInlineChoicePollution();
-        var storedNarrativePollution = narrativeCollectionsContainInlineChoicePollution(profile);
-        var normalizedProfile = purgeClosedSourcePendingDiffs(profile, "主控条渲染前清理已关闭事件 pending diff。");
-        var beforeRepairDate = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
-        ensureArray(normalizedProfile.draftHistory).slice().reverse().some(function(event){
-          if (!isClosedStoryEventForDiff(event)) return false;
-          var before = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
-          normalizedProfile = restoreInlineTimeJumpBeforeRejectedEvent(normalizedProfile, event, "主控条渲染前修复已取消事件遗留时间推进。");
-          return trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) !== before;
-        });
-        var needsProfileSync = trimText(profile.currentYear) !== trimText(normalizedProfile.currentYear) ||
-          trimText(profile.age) !== trimText(normalizedProfile.age) ||
-          trimText(profile.calendarState && profile.calendarState.currentDate) !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
-          ensureArray(profile.pendingStateDiffs).length !== ensureArray(normalizedProfile.pendingStateDiffs).length ||
-          trimText(profile.pendingInlineTimeJumpContext && profile.pendingInlineTimeJumpContext.newDate) !== trimText(normalizedProfile.pendingInlineTimeJumpContext && normalizedProfile.pendingInlineTimeJumpContext.newDate) ||
-          beforeRepairDate !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
-          storedNarrativePollution ||
-          visibleNarrativePollution ||
-          bridgeStoryCleaned;
-        timingDetail.needsProfileSync = !!needsProfileSync;
-        profile = normalizedProfile;
-        if (needsProfileSync && !inlineProfileSyncInProgress) {
-          inlineProfileSyncInProgress = true;
-          try {
-            var savedNormalized = await saveProfile(normalizedProfile, {alreadyNormalized:true});
-            if (savedNormalized && !savedNormalized.__asv2AbortSave) {
-              profile = savedNormalized;
-              syncReactBridgeProfile(savedNormalized);
-            } else if (visibleNarrativePollution) {
-              syncReactBridgeProfile(normalizedProfile);
+        if (opts.skipProfileRepair !== true) {
+          var bridgeStoryCleaned = sanitizeCurrentBridgeStoryChoicePollution();
+          var visibleNarrativePollution = documentHasVisibleInlineChoicePollution();
+          var storedNarrativePollution = narrativeCollectionsContainInlineChoicePollution(profile);
+          var normalizedProfile = purgeClosedSourcePendingDiffs(profile, "主控条渲染前清理已关闭事件 pending diff。");
+          var beforeRepairDate = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
+          ensureArray(normalizedProfile.draftHistory).slice().reverse().some(function(event){
+            if (!isClosedStoryEventForDiff(event)) return false;
+            var before = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
+            normalizedProfile = restoreInlineTimeJumpBeforeRejectedEvent(normalizedProfile, event, "主控条渲染前修复已取消事件遗留时间推进。");
+            return trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) !== before;
+          });
+          var needsProfileSync = trimText(profile.currentYear) !== trimText(normalizedProfile.currentYear) ||
+            trimText(profile.age) !== trimText(normalizedProfile.age) ||
+            trimText(profile.calendarState && profile.calendarState.currentDate) !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
+            ensureArray(profile.pendingStateDiffs).length !== ensureArray(normalizedProfile.pendingStateDiffs).length ||
+            trimText(profile.pendingInlineTimeJumpContext && profile.pendingInlineTimeJumpContext.newDate) !== trimText(normalizedProfile.pendingInlineTimeJumpContext && normalizedProfile.pendingInlineTimeJumpContext.newDate) ||
+            beforeRepairDate !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
+            storedNarrativePollution ||
+            visibleNarrativePollution ||
+            bridgeStoryCleaned;
+          timingDetail.needsProfileSync = !!needsProfileSync;
+          profile = normalizedProfile;
+          if (needsProfileSync && !inlineProfileSyncInProgress) {
+            inlineProfileSyncInProgress = true;
+            try {
+              var savedNormalized = await saveProfile(normalizedProfile, {alreadyNormalized:true});
+              if (savedNormalized && !savedNormalized.__asv2AbortSave) {
+                profile = savedNormalized;
+                syncReactBridgeProfile(savedNormalized);
+              } else if (visibleNarrativePollution) {
+                syncReactBridgeProfile(normalizedProfile);
+              }
+            } catch (syncError) {
+              console.warn("[A-Site V2] inline profile timeline sync failed:", syncError);
+              if (visibleNarrativePollution) syncReactBridgeProfile(normalizedProfile);
+            } finally {
+              inlineProfileSyncInProgress = false;
             }
-          } catch (syncError) {
-            console.warn("[A-Site V2] inline profile timeline sync failed:", syncError);
-            if (visibleNarrativePollution) syncReactBridgeProfile(normalizedProfile);
-          } finally {
-            inlineProfileSyncInProgress = false;
           }
         }
         syncVisibleProfileTimeText(profile);
@@ -11334,7 +11348,7 @@
         attempts: syncResult && syncResult.attempts || 0
       });
       stageStartedAt = runtimeNow();
-      var acceptInlineRenderResult = await renderInlineControlsNow().catch(function(error){
+      var acceptInlineRenderResult = await renderInlineControlsNow({profile:saved, alreadyNormalized:true, skipProfileRepair:true}).catch(function(error){
         console.warn("[A-Site V2] inline controls render after accept failed:", error);
         return null;
       });
