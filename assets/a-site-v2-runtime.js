@@ -2036,6 +2036,10 @@
   }
 
   function formatLoreBlocks(retrieval){
+    var selected = ensureArray(retrieval && retrieval.selected);
+    if (!selected.length) {
+      return "[LORE_RETRIEVAL]\nselected = 0\n- 无匹配 Lore 条目";
+    }
     var groups = {
       WORLD_PUBLIC: [],
       PROTAGONIST_KNOWN: [],
@@ -2043,7 +2047,7 @@
       AUTHOR_ONLY: [],
       NPC_BELIEF: []
     };
-    ensureArray(retrieval && retrieval.selected).forEach(function(candidate){
+    selected.forEach(function(candidate){
       var entry = candidate.entry;
       var summary = trimText(entry.summary || entry.detail || entry.title);
       if (!summary) return;
@@ -2708,7 +2712,7 @@
   function buildContextBlock(player, eventContext){
     if (!isObject(player)) return "";
     eventContext = eventContext || {};
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player || {}, eventContext);
     var normalizedEventContext = withNormalizedContext(eventContext);
     var context = buildContextForAgent(normalized, "RUNTIME", normalizedEventContext);
     var conflicts = context.warnings || [];
@@ -2887,7 +2891,7 @@
   function buildMainGenerationContextBlock(player, agentName, eventContext){
     if (!isObject(player)) return "";
     eventContext = eventContext || {};
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player || {}, eventContext);
     var normalizedEventContext = withNormalizedContext(eventContext);
     var context = buildContextForAgent(normalized, agentName || "UNKNOWN", normalizedEventContext);
     var conflicts = context.warnings || [];
@@ -2940,7 +2944,7 @@
   function buildMainTaskGenerationContextBlock(player, agentName, eventContext){
     if (!isObject(player)) return "";
     eventContext = eventContext || {};
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player || {}, eventContext);
     var normalizedEventContext = withNormalizedContext(eventContext);
     var context = buildContextForAgent(normalized, agentName || "UNKNOWN", normalizedEventContext);
     var layers = normalized.knowledgeLayers || {};
@@ -3691,7 +3695,7 @@
       hasProtagonistKnown: hasProtagonistKnown,
       hasAuthorOnly: hasAuthorOnly,
       hasNpcBelief: hasNpcBelief,
-      hasNpcCard: messagesTextIncludes(messages, "[NPC_CARD"),
+      hasNpcCard: messagesTextIncludes(messages, "[NPC_CARD::"),
       hasPostAcceptMarker: messagesTextIncludes(messages, POST_ACCEPT_MARKER),
       hasAgentOutputContract: messagesTextIncludes(messages, "[A_SITE_V2_AGENT_OUTPUT_CONTRACT]"),
       agentContractBlockCount: countASiteAgentContractBlocksInMessages(messages),
@@ -3768,9 +3772,9 @@
       .replace(/主角的愿望与驱动力:\s*\[object Object\]/g, "主角的愿望与驱动力:\n" + goalsText);
   }
 
-  function buildPromptRuntimeSanitizeState(player){
+  function buildPromptRuntimeSanitizeState(player, options){
     if (!isObject(player)) return null;
-    var normalized = normalizePlayer(player);
+    var normalized = options && options.alreadyNormalized === true ? player : normalizePlayer(player);
     return {
       currentTime: trimText(normalized.currentYear || normalized.calendarState && normalized.calendarState.currentDate),
       currentAge: trimText(normalized.age)
@@ -3800,8 +3804,8 @@
     return value;
   }
 
-  function sanitizePayloadMessages(messages, player){
-    var runtimeState = buildPromptRuntimeSanitizeState(player);
+  function sanitizePayloadMessages(messages, player, options){
+    var runtimeState = buildPromptRuntimeSanitizeState(player, options);
     return ensureArray(messages).map(function(message){
       if (!isObject(message)) return message;
       return Object.assign({}, message, {content: sanitizePromptRuntimeState(message.content, player, runtimeState)});
@@ -3819,6 +3823,8 @@
         console.debug("[A-Site V2] fetch patch audit", JSON.stringify({
           agent: normalized.originalAgentName,
           mode: normalized.mode,
+          contextTier: normalized.contextTier,
+          profileNormalizedOnce: normalized.profileNormalizedOnce,
           hasMainContext: normalized.hasMainContext,
           hasScenePolicy: normalized.hasScenePolicy,
           hasSceneFrame: normalized.hasSceneFrame,
@@ -3848,6 +3854,8 @@
               agentNameOriginal: normalized.originalAgentName,
               agentNameFinal: normalized.agentNameFinal || normalized.originalAgentName,
               mode: normalized.mode,
+              contextTier: normalized.contextTier || "",
+              profileNormalizedOnce: normalized.profileNormalizedOnce === true,
               profileId: normalized.profileId || "",
               eventId: normalized.eventId || "",
               messageCount: normalized.messageCount || 0,
@@ -5724,8 +5732,8 @@
     };
   }
 
-  function buildExtractionMessages(player, storyEvent, agentName){
-    var normalized = normalizePlayer(player || {});
+  function buildExtractionMessages(player, storyEvent, agentName, options){
+    var normalized = options && options.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
     var legacyPayload = isObject(storyEvent && storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
     var extractionMode = getEffectiveExtractionMode(normalized);
     var acceptedTextBudget = compactAcceptedTextForExtraction(
@@ -6772,8 +6780,8 @@
       try {
         var settings = await getSettings();
         var agentCalls = [
-          {agent: "STORYTELLER_DATA", messages: buildExtractionMessages(normalized, event, "STORYTELLER_DATA")},
-          {agent: "ARCHIVIST", messages: buildExtractionMessages(normalized, event, "ARCHIVIST")}
+          {agent: "STORYTELLER_DATA", messages: buildExtractionMessages(normalized, event, "STORYTELLER_DATA", {alreadyNormalized:true})},
+          {agent: "ARCHIVIST", messages: buildExtractionMessages(normalized, event, "ARCHIVIST", {alreadyNormalized:true})}
         ];
         var agentResults = await Promise.all(agentCalls.map(function(call){
           return callChatJson(settings, call.messages, call.agent, normalized.id).then(function(response){
@@ -8148,27 +8156,28 @@
                   showToast("当前档案已是终局状态。继续生成前请确认要回滚、导入旧档或开启新人生。", "warn");
                 }
               }
-              var contextEvent = {requestText: originalRequestText || requestText, agentName: originalAgentName || agentName};
+              var promptProfile = normalizePlayer(profile || {});
+              var contextEvent = {requestText: originalRequestText || requestText, agentName: originalAgentName || agentName, alreadyNormalized:true};
               var isMainAgent = isMainGenerationAgent(originalAgentName);
-              var controlForAudit = normalizeSceneControl(profile.sceneControl, profile.immersionSettings, profile.sceneState);
-              var sceneForAudit = normalizeSceneState(profile.sceneState);
-              var profileIdForAudit = trimText(profile.id || profile.profileId);
+              var controlForAudit = normalizeSceneControl(promptProfile.sceneControl, promptProfile.immersionSettings, promptProfile.sceneState);
+              var sceneForAudit = normalizeSceneState(promptProfile.sceneState);
+              var profileIdForAudit = trimText(promptProfile.id || promptProfile.profileId);
               var isTaskAgent = isTaskGenerationAgent(originalAgentName);
               var contextTier = isTaskAgent ? "task-compact" : (isNarrativeGenerationAgent(originalAgentName) ? "narrative-compact" : (isMainAgent ? "main-full" : "general"));
               var block = isMainAgent
                 ? (isTaskAgent
-                  ? buildMainTaskGenerationContextBlock(profile, originalAgentName, contextEvent)
-                  : buildMainGenerationContextBlock(profile, originalAgentName, contextEvent))
-                : buildContextBlock(profile, contextEvent);
-              var messages = sanitizePayloadMessages(payload.messages, profile);
+                  ? buildMainTaskGenerationContextBlock(promptProfile, originalAgentName, contextEvent)
+                  : buildMainGenerationContextBlock(promptProfile, originalAgentName, contextEvent))
+                : buildContextBlock(promptProfile, contextEvent);
+              var messages = sanitizePayloadMessages(payload.messages, promptProfile, {alreadyNormalized:true});
               messages = upsertASiteSystemMessage(messages, block, isMainAgent ? "prepend-system" : "replace-existing");
               if (isMainAgent) {
                 messages = appendMainAgentOutputContract(messages, buildGranularityAgentContract(
                   originalAgentName,
                   controlForAudit.granularityPreset,
-                  profile.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext(),
+                  promptProfile.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext(),
                   sceneForAudit,
-                  profile
+                  promptProfile
                 ));
               }
               payload.messages = messages;
@@ -8184,18 +8193,19 @@
                  patched: true,
                  mode: isMainAgent ? "main-generation" : "general",
                  contextTier: contextTier,
+                 profileNormalizedOnce: true,
                  profileId: profileIdForAudit,
-                eventId: trimText(profile.currentEventId || profile.currentYearEventId || sceneForAudit.currentSceneId),
+                eventId: trimText(promptProfile.currentEventId || promptProfile.currentYearEventId || sceneForAudit.currentSceneId),
                 messageCount: messages.length,
                 patchedLength: patchedLength,
                 granularity: controlForAudit.granularityPreset,
                 detailLevel: controlForAudit.detailLevel,
                 sceneId: sceneForAudit.currentSceneId || sceneForAudit.sceneId || "",
                 activeNpcCount: ensureArray(sceneForAudit.activeNpcIds || sceneForAudit.presentCharacters).length,
-                loreEntriesCount: ensureArray(profile.loreEntries).length,
-                npcProfilesCount: isObject(profile.npcProfiles)
-                  ? Object.keys(profile.npcProfiles).length
-                  : ensureArray(profile.npcProfiles).length
+                loreEntriesCount: ensureArray(promptProfile.loreEntries).length,
+                npcProfilesCount: isObject(promptProfile.npcProfiles)
+                  ? Object.keys(promptProfile.npcProfiles).length
+                  : ensureArray(promptProfile.npcProfiles).length
               }, promptMarkers));
               nextInit = Object.assign({}, init, { body: JSON.stringify(payload) });
             } else {
@@ -8239,8 +8249,8 @@
             originalAgentName,
             retryContent,
             sceneForAudit,
-            profile && profile.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext()
-          );
+              promptProfile && promptProfile.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext()
+            );
           if (retryViolation) {
             var retryPayload = JSON.parse(nextInit.body);
             retryPayload.messages = appendLensRetryMessage(
@@ -8255,7 +8265,7 @@
               patched: true,
               mode: "lens-retry",
               profileId: profileIdForAudit || "",
-              eventId: trimText(profile && (profile.currentEventId || profile.currentYearEventId) || sceneForAudit && sceneForAudit.currentSceneId),
+              eventId: trimText(promptProfile && (promptProfile.currentEventId || promptProfile.currentYearEventId) || sceneForAudit && sceneForAudit.currentSceneId),
               messageCount: ensureArray(retryPayload.messages).length,
               patchedLength: retryPromptLength,
               granularity: controlForAudit && controlForAudit.granularityPreset || "",
