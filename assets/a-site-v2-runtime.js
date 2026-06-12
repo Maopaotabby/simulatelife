@@ -11594,33 +11594,7 @@
         await getSessionLogs(normalized.id).catch(function(){ return []; }),
         getRuntimeLogMirror(normalized.id)
       );
-      var compactedLogs = compactLogsForExport(logs);
-      var payload = {
-        schemaVersion: SCHEMA_VERSION,
-        appVersion: APP_PATCH_VERSION,
-        version: "1.23",
-        player: normalized,
-        logs: compactedLogs,
-        isPruned: false,
-        exportedAt: new Date().toISOString(),
-        pendingStateDiffs: normalized.pendingStateDiffs,
-        pendingAcceptedEvents: normalized.pendingAcceptedEvents,
-        timeAdjustmentHistory: normalized.timeAdjustmentHistory,
-        draftExclusions: normalized.draftExclusions,
-        patchHistory: normalized.patchHistory,
-        rollbackHistory: normalized.rollbackHistory,
-        immersionSettings: normalized.immersionSettings,
-        sceneControl: normalized.sceneControl,
-        sceneState: normalized.sceneState,
-        shortTermSceneMemory: normalized.shortTermSceneMemory,
-        sceneMemoryArchive: normalized.sceneMemoryArchive,
-        loreEntries: normalized.loreEntries,
-        npcProfiles: normalized.npcProfiles,
-        retrievalLog: normalized.retrievalLog,
-        nextGranularitySuggestions: normalized.nextGranularitySuggestions,
-        v2RootMirrorSummary: buildRootMirrorSummary(normalized, "panel_export_root_history_mirrors_omitted"),
-        v2LogExportSummary: buildLogExportSummary(logs, compactedLogs)
-      };
+      var payload = buildFullExportPayload({version:"1.23", isPruned:false}, normalized, logs);
       downloadText("save_" + (normalized.name || "player") + "_v2_" + formatDate(new Date()) + ".json", JSON.stringify(payload, null, 2));
     };
     panel.onclick = async function(event){
