@@ -9915,14 +9915,23 @@
 
   function syncReactBridgeProfile(profile, options){
     var bridge = window.__ASiteV2ReactBridge;
-    if (!bridge || !profile) return;
+    var result = {
+      bridgeExists: !!bridge,
+      applied: false,
+      clearCurrentEvent: !!(options && options.clearCurrentEvent),
+      phase: trimText(options && options.phase)
+    };
+    if (!bridge || !profile) return result;
     try {
       if (typeof bridge.setPlayer === "function") bridge.setPlayer(profile);
       if (options && options.clearCurrentEvent && typeof bridge.setCurrentYearEvent === "function") bridge.setCurrentYearEvent(null);
       if (options && options.phase && typeof bridge.setPhase === "function") bridge.setPhase(options.phase);
+      result.applied = true;
     } catch (error) {
+      result.error = error && error.message || String(error || "unknown");
       console.warn("[A-Site V2] React bridge sync failed:", error);
     }
+    return result;
   }
 
   function waitForReactBridgeTick(){
@@ -10001,6 +10010,39 @@
       console.warn("[A-Site V2] React bridge verified sync failed:", error);
       return result;
     }
+  }
+
+  function scheduleReactBridgeProfileVerification(profile, options){
+    var opts = Object.assign({}, options || {});
+    var result = {
+      scheduled: false,
+      bridgeExists: !!window.__ASiteV2ReactBridge,
+      acceptedEventId: trimText(opts.acceptedEventId),
+      delayMs: Math.max(0, Math.floor(Number(opts.delayMs) || 0))
+    };
+    if (!window.__ASiteV2ReactBridge || !profile) return result;
+    result.scheduled = true;
+    window.setTimeout(function(){
+      var startedAt = runtimeNow();
+      syncReactBridgeProfileAndVerify(profile, opts).then(function(verifyResult){
+        recordRuntimeTiming("reactBridgeDeferredVerify", startedAt, {
+          status: verifyResult && verifyResult.synced ? "verified" : "unverified",
+          synced: verifyResult && verifyResult.synced === true,
+          attempts: verifyResult && verifyResult.attempts || 0,
+          acceptedEventId: result.acceptedEventId,
+          clearCurrentEvent: !!opts.clearCurrentEvent,
+          phase: trimText(opts.phase),
+          snapshot: verifyResult && verifyResult.snapshot || null
+        }, 80);
+      }).catch(function(error){
+        recordRuntimeTiming("reactBridgeDeferredVerify", startedAt, {
+          status: "error",
+          error: String(error && error.message || error),
+          acceptedEventId: result.acceptedEventId
+        }, 0);
+      });
+    }, result.delayMs);
+    return result;
   }
 
   function isInsideASiteV2Ui(element){
@@ -11154,6 +11196,8 @@
       pendingAcceptedAfter: source.pendingAcceptedAfter,
       pendingStateDiffsAfter: source.pendingStateDiffsAfter,
       reactBridgeSynced: source.reactBridgeSynced === true,
+      reactBridgeSyncApplied: source.reactBridgeSyncApplied === true,
+      reactBridgeVerificationDeferred: source.reactBridgeVerificationDeferred === true,
       reactBridgeSyncAttempts: Number(source.reactBridgeSyncAttempts || 0) || 0,
       timingCount: timings.length,
       slowestStage: slowestAcceptChainStage(timings),
@@ -11342,10 +11386,14 @@
         return;
       }
       stageStartedAt = runtimeNow();
-      var syncResult = await syncReactBridgeProfileAndVerify(saved, {clearCurrentEvent:true, phase:"IDLE", acceptedEventId: acceptedStoryEventId});
-      recordAcceptChainStage(acceptChainTimings, "syncReactBridgeProfileAndVerify", stageStartedAt, {
-        synced: syncResult && syncResult.synced === true,
-        attempts: syncResult && syncResult.attempts || 0
+      var syncResult = syncReactBridgeProfile(saved, {clearCurrentEvent:true, phase:"IDLE"});
+      var deferredBridgeVerify = scheduleReactBridgeProfileVerification(saved, {clearCurrentEvent:true, phase:"IDLE", acceptedEventId: acceptedStoryEventId});
+      recordAcceptChainStage(acceptChainTimings, "syncReactBridgeProfile", stageStartedAt, {
+        applied: syncResult && syncResult.applied === true,
+        bridgeExists: syncResult && syncResult.bridgeExists === true,
+        verificationDeferred: deferredBridgeVerify && deferredBridgeVerify.scheduled === true,
+        verifyDelayMs: deferredBridgeVerify && deferredBridgeVerify.delayMs || 0,
+        attempts: 0
       });
       stageStartedAt = runtimeNow();
       var acceptInlineRenderResult = await renderInlineControlsNow({profile:saved, alreadyNormalized:true, skipProfileRepair:true}).catch(function(error){
@@ -11388,9 +11436,11 @@
         savedLatestHistoryId: trimText(latestAcceptedHistoryEntry(saved) && latestAcceptedHistoryEntry(saved).id),
         savedStateDiffHistoryLength: ensureArray(saved.stateDiffHistory).length,
         savedPatchHistoryLength: ensureArray(saved.patchHistory).length,
-        reactBridgeSynced: syncResult && syncResult.synced === true,
-        reactBridgeSyncAttempts: syncResult && syncResult.attempts || 0,
-        reactBridgeSnapshot: syncResult && syncResult.snapshot || null,
+        reactBridgeSynced: syncResult && syncResult.applied === true,
+        reactBridgeSyncApplied: syncResult && syncResult.applied === true,
+        reactBridgeVerificationDeferred: deferredBridgeVerify && deferredBridgeVerify.scheduled === true,
+        reactBridgeSyncAttempts: 0,
+        reactBridgeSnapshot: null,
         pendingAcceptedAfter: ensureArray(saved.pendingAcceptedEvents).length,
         pendingStateDiffsAfter: ensureArray(saved.pendingStateDiffs).length
       });
