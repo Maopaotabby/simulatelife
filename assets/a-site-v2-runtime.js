@@ -2274,8 +2274,8 @@
     return common.concat(rules.filter(Boolean), [AGENT_CONTRACT_END]).join("\n");
   }
 
-  function buildGranularityAgentContract(agentName, granularityPreset, timeAdvanceContext, sceneState, player){
-    var base = normalizePlayer(player || {});
+  function buildGranularityAgentContract(agentName, granularityPreset, timeAdvanceContext, sceneState, player, options){
+    var base = options && options.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
     var preset = canonicalGranularity(granularityPreset || (base.sceneControl && base.sceneControl.granularityPreset) || (base.immersionSettings && base.immersionSettings.granularityPreset));
     var scene = normalizeSceneState(sceneState || base.sceneState || {});
     var settings = normalizeSceneControl(Object.assign({}, base.sceneControl || {}, {
@@ -3825,6 +3825,7 @@
           mode: normalized.mode,
           contextTier: normalized.contextTier,
           profileNormalizedOnce: normalized.profileNormalizedOnce,
+          contractProfileNormalizedOnce: normalized.contractProfileNormalizedOnce,
           hasMainContext: normalized.hasMainContext,
           hasScenePolicy: normalized.hasScenePolicy,
           hasSceneFrame: normalized.hasSceneFrame,
@@ -3856,6 +3857,7 @@
               mode: normalized.mode,
               contextTier: normalized.contextTier || "",
               profileNormalizedOnce: normalized.profileNormalizedOnce === true,
+              contractProfileNormalizedOnce: normalized.contractProfileNormalizedOnce === true,
               profileId: normalized.profileId || "",
               eventId: normalized.eventId || "",
               messageCount: normalized.messageCount || 0,
@@ -8177,7 +8179,8 @@
                   controlForAudit.granularityPreset,
                   promptProfile.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext(),
                   sceneForAudit,
-                  promptProfile
+                  promptProfile,
+                  {alreadyNormalized:true}
                 ));
               }
               payload.messages = messages;
@@ -8194,6 +8197,7 @@
                  mode: isMainAgent ? "main-generation" : "general",
                  contextTier: contextTier,
                  profileNormalizedOnce: true,
+                 contractProfileNormalizedOnce: isMainAgent,
                  profileId: profileIdForAudit,
                 eventId: trimText(promptProfile.currentEventId || promptProfile.currentYearEventId || sceneForAudit.currentSceneId),
                 messageCount: messages.length,
