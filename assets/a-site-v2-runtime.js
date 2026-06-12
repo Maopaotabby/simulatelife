@@ -22,6 +22,17 @@
   var latestRetrievalLog = [];
   var latestSavedProfileCache = null;
   var recentCommittedWriteGuard = null;
+  var runtimeTimingLog = [];
+  var RUNTIME_TIMING_SLOW_MS = 120;
+  var SESSION_LOG_LIMIT = 80;
+  var SESSION_LOG_PERSIST_DEBOUNCE_MS = 1200;
+  var pendingSessionLogPersist = Object.create(null);
+  var sessionLogPersistTimer = 0;
+  var sessionLogPersistActive = false;
+  var CHECKPOINT_SYNC_DEBOUNCE_MS = 900;
+  var pendingCheckpointSync = Object.create(null);
+  var checkpointSyncTimer = 0;
+  var checkpointSyncActive = false;
 
   var GRANULARITY_POLICIES = {
     micro_action: {
@@ -152,6 +163,59 @@
 
   function trimText(value){
     return typeof value === "string" ? value.trim() : "";
+  }
+
+  function runtimeNow(){
+    try {
+      if (typeof performance !== "undefined" && typeof performance.now === "function") return performance.now();
+    } catch (_) {}
+    return Date.now();
+  }
+
+  function buildRuntimeProfileTimingDetail(profile){
+    var source = isObject(profile) ? profile : {};
+    return {
+      profileId: trimText(source.id || source.profileId),
+      historyCount: ensureArray(source.history).length,
+      draftHistoryCount: ensureArray(source.draftHistory).length,
+      pendingStateDiffCount: ensureArray(source.pendingStateDiffs).length,
+      loreEntryCount: ensureArray(source.loreEntries).length,
+      npcProfileCount: isObject(source.npcProfiles) ? Object.keys(source.npcProfiles).length : ensureArray(source.npcProfiles).length
+    };
+  }
+
+  function recordRuntimeTiming(name, startedAt, detail, slowMs){
+    var duration = Math.max(0, Math.round((runtimeNow() - Number(startedAt || 0)) * 10) / 10);
+    var entry = Object.assign({
+      name: trimText(name) || "unknown",
+      timestamp: new Date().toISOString(),
+      duration: duration
+    }, isObject(detail) ? detail : {});
+    runtimeTimingLog.push(entry);
+    if (runtimeTimingLog.length > 80) runtimeTimingLog = runtimeTimingLog.slice(-80);
+    var threshold = Number.isFinite(Number(slowMs)) ? Number(slowMs) : RUNTIME_TIMING_SLOW_MS;
+    if (duration >= threshold) {
+      try { console.info("[A-Site V2 RuntimeTiming]", entry); } catch (_) {}
+    }
+    return entry;
+  }
+
+  function getRuntimeTimingLog(){
+    return runtimeTimingLog.slice();
+  }
+
+  function getLatestSavedProfileCacheForProfile(profile){
+    if (!isObject(latestSavedProfileCache)) return null;
+    if (!isObject(profile)) return latestSavedProfileCache;
+    var id = trimText(profile.id || profile.profileId);
+    var cacheId = trimText(latestSavedProfileCache.id || latestSavedProfileCache.profileId);
+    if (!id || !cacheId || id === cacheId || profileIdentityMatches(latestSavedProfileCache, profile)) return latestSavedProfileCache;
+    return null;
+  }
+
+  function rememberLatestSavedProfileCache(profile, alreadyNormalized){
+    latestSavedProfileCache = alreadyNormalized && isObject(profile) ? profile : normalizePlayer(profile || {});
+    return latestSavedProfileCache;
   }
 
   function storyTextCandidate(value){
@@ -1348,6 +1412,135 @@
     });
   }
 
+  function extractPromptSection(text, label){
+    var source = trimText(text);
+    if (!source || !label) return "";
+    var marker = "【" + label + "】";
+    var start = source.indexOf(marker);
+    if (start < 0) return "";
+    start += marker.length;
+    var rest = source.slice(start);
+    var next = rest.search(/【[^】]{2,32}】/);
+    return trimText(next >= 0 ? rest.slice(0, next) : rest);
+  }
+
+  function looksLikeSingleUsePromptText(value){
+    var text = trimText(value);
+    if (text.length < 700) return false;
+    if (text.indexOf("【以下为新事件生成提示词】") >= 0) return true;
+    var markers = 0;
+    ["【事件标题】","【当前时间】","【事件地点】","【当前地点】","【事件主题】","【生成要求】","【前情摘要】","【前情承接】"].forEach(function(marker){
+      if (text.indexOf(marker) >= 0) markers += 1;
+    });
+    return markers >= 3;
+  }
+
+  function compactSingleUsePromptText(value){
+    var text = trimText(value);
+    if (!looksLikeSingleUsePromptText(text)) return value;
+    var title = extractPromptSection(text, "事件标题") || extractPromptSection(text, "标题") || "未命名单次提示";
+    var focus = extractPromptSection(text, "事件主题") || extractPromptSection(text, "事件重点") || extractPromptSection(text, "生成要求");
+    var summary = "【已消费单次提示】" + title.slice(0, 80);
+    if (focus) summary += "｜" + focus.slice(0, 180);
+    summary += "（原始prompt已消费并省略，原长度" + text.length + "字）";
+    return summary;
+  }
+
+  function compactConsumedPromptFields(value, depth){
+    if (!isObject(value) && !Array.isArray(value)) return value;
+    if (depth > 5) return value;
+    if (Array.isArray(value)) {
+      return value.map(function(item){ return compactConsumedPromptFields(item, depth + 1); });
+    }
+    var next = Object.assign({}, value);
+    ["selectedKeyword","customThemeText","theme","directorText"].forEach(function(field){
+      if (typeof next[field] === "string") next[field] = compactSingleUsePromptText(next[field]);
+    });
+    ["legacyEventPayload","sourceStoryEvent","rawModelOutput"].forEach(function(field){
+      if (isObject(next[field]) || Array.isArray(next[field])) next[field] = compactConsumedPromptFields(next[field], depth + 1);
+    });
+    return next;
+  }
+
+  function compactConsumedPromptFieldsForProfile(player){
+    if (!isObject(player)) return player;
+    var next = Object.assign({}, player);
+    ["history","canonHistory","draftHistory","pendingAcceptedEvents"].forEach(function(field){
+      next[field] = ensureArray(next[field]).map(function(item){ return compactConsumedPromptFields(item, 0); });
+    });
+    ["stateDiffHistory","pendingStateDiffs"].forEach(function(field){
+      next[field] = ensureArray(next[field]).map(function(item){ return compactConsumedPromptFields(item, 0); });
+    });
+    return next;
+  }
+
+  function eventReferencesCustomTheme(event, theme){
+    var target = trimText(theme);
+    if (!target || !isObject(event)) return false;
+    var legacy = isObject(event.legacyEventPayload) ? event.legacyEventPayload : {};
+    return [
+      event.selectedKeyword,
+      event.customThemeText,
+      event.theme,
+      event.directorText,
+      legacy.selectedKeyword,
+      legacy.customThemeText,
+      legacy.theme
+    ].some(function(value){ return trimText(value) === target; });
+  }
+
+  function recentEventReferencesCustomTheme(player, theme){
+    var normalized = isObject(player) ? player : {};
+    var recentEvents = []
+      .concat(ensureArray(normalized.pendingAcceptedEvents).slice(-3))
+      .concat(ensureArray(normalized.draftHistory).slice(-3))
+      .concat(ensureArray(normalized.canonHistory).slice(-2));
+    if (recentEvents.some(function(event){ return eventReferencesCustomTheme(event, theme); })) return true;
+    return ensureArray(normalized.stateDiffHistory).slice(-3).some(function(diff){
+      return eventReferencesCustomTheme(diff && diff.sourceStoryEvent, theme);
+    });
+  }
+
+  function clearConsumedCustomTheme(player, reason){
+    var next = normalizePlayer(player || {});
+    var theme = trimText(next.customNextTheme);
+    var mode = trimText(next.customNextThemeMode);
+    if (!theme && !mode) return next;
+    var context = isObject(next.pendingInlineTimeJumpContext) ? Object.assign({}, next.pendingInlineTimeJumpContext) : null;
+    if (context) {
+      context.customThemeConsumedAt = new Date().toISOString();
+      context.customThemeConsumedReason = reason || "single_use_custom_theme_consumed";
+      if (theme) context.consumedCustomThemePreview = theme.slice(0, 80);
+      if (mode) context.consumedCustomThemeMode = mode;
+    }
+    next.customNextTheme = undefined;
+    next.customNextThemeMode = undefined;
+    next.pendingInlineTimeJumpContext = context;
+    return normalizePlayer(next);
+  }
+
+  function clearArchivedConsumedCustomTheme(player, reason){
+    if (!isObject(player)) return player;
+    var theme = trimText(player.customNextTheme);
+    if (!theme || !recentEventReferencesCustomTheme(player, theme)) return player;
+    return clearConsumedCustomTheme(player, reason || "single_use_custom_theme_already_archived");
+  }
+
+  function persistConsumedCustomThemeAfterNativeStart(profile, bridge, reason){
+    var source = profile || getReactBridgeProfile();
+    if (!source || !trimText(source.customNextTheme) && !trimText(source.customNextThemeMode)) return;
+    var cleared = clearConsumedCustomTheme(source, reason || "single_use_custom_theme_started_generation");
+    var liveBridge = window.__ASiteV2ReactBridge || bridge;
+    if (liveBridge && typeof liveBridge.setPlayer === "function") {
+      liveBridge.setPlayer(preserveInlineTimeJumpContext(cleared, cleared));
+    }
+    saveProfile(cleared).then(function(saved){
+      if (saved && !saved.__asv2AbortSave) syncReactBridgeProfile(saved);
+    }).catch(function(error){
+      console.warn("[A-Site V2] failed to persist consumed custom theme cleanup:", error);
+    });
+  }
+
   function sanitizeNarrativeChainText(chain){
     if (!isObject(chain)) return chain;
     var next = Object.assign({}, chain);
@@ -1997,8 +2190,16 @@
     return "按当前粒度控制时间跨度、场景尺度、选项尺度和状态提取强度；不要把粒度当作字数硬限制。";
   }
 
+  function normalizeContextPlayer(player, options){
+    return options && options.alreadyNormalized ? (player || {}) : normalizePlayer(player || {});
+  }
+
+  function withNormalizedContext(options){
+    return Object.assign({}, options || {}, {alreadyNormalized:true});
+  }
+
   function buildMainAgentOutputContract(player, agentName, eventContext){
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player, eventContext);
     var settings = normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState);
     var scene = normalizeSceneState(normalized.sceneState);
     var preset = canonicalGranularity(settings.granularityPreset);
@@ -2083,7 +2284,8 @@
     });
     return buildMainAgentOutputContract(proxyPlayer, agentName, {
       agentName: agentName,
-      requestText: ""
+      requestText: "",
+      alreadyNormalized: true
     });
   }
 
@@ -2097,6 +2299,31 @@
       startIndex = text.indexOf(AGENT_CONTRACT_START);
     }
     return text;
+  }
+
+  function countASiteAgentContractBlocks(content){
+    var text = String(content || "");
+    var count = 0;
+    var startIndex = text.indexOf(AGENT_CONTRACT_START);
+    while (startIndex >= 0) {
+      var endIndex = text.indexOf(AGENT_CONTRACT_END, startIndex + AGENT_CONTRACT_START.length);
+      if (endIndex <= startIndex) break;
+      count += 1;
+      startIndex = text.indexOf(AGENT_CONTRACT_START, endIndex + AGENT_CONTRACT_END.length);
+    }
+    return count;
+  }
+
+  function buildMainAgentContractReference(contract){
+    var text = String(contract || "");
+    var agentMatch = text.match(/(?:^|\n)agent\s*=\s*([^\n]+)/);
+    var granularityMatch = text.match(/(?:^|\n)granularity\s*=\s*([^\n]+)/);
+    return [
+      "[A_SITE_V2_AGENT_OUTPUT_CONTRACT_REFERENCE]",
+      "完整输出合同已作为上一条 system 消息注入；若与原站原始任务冲突，以 system 中 A_SITE_V2_AGENT_OUTPUT_CONTRACT 为准。",
+      "agent = " + trimText(agentMatch && agentMatch[1] || "UNKNOWN"),
+      "granularity = " + trimText(granularityMatch && granularityMatch[1] || "unknown")
+    ].join("\n");
   }
 
   function appendMainAgentOutputContract(messages, contract){
@@ -2120,14 +2347,14 @@
     }
     if (userIndex >= 0) {
       cleaned[userIndex] = Object.assign({}, cleaned[userIndex], {
-        content: contract + "\n\n【以下是原站原始任务。若与上方 A_SITE_V2_AGENT_OUTPUT_CONTRACT 冲突，以上方合同为准。】\n" + trimText(cleaned[userIndex].content)
+        content: buildMainAgentContractReference(contract) + "\n\n【以下是原站原始任务。若与上方 A_SITE_V2_AGENT_OUTPUT_CONTRACT 冲突，以上方合同为准。】\n" + trimText(cleaned[userIndex].content)
       });
     }
     return cleaned;
   }
 
   function buildImmersionContextBlock(player, eventContext){
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player, eventContext);
     var settings = normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState);
     var policy = getGranularityPolicy(settings.granularityPreset);
     var transitionWarning = getGranularityTransitionWarning(settings.lastGranularity, settings.granularityPreset, settings, normalized.sceneState);
@@ -2210,6 +2437,77 @@
       "- shortTermSceneMemory 是 non-canon 短期镜头缓存，只服务当前 sceneId 的连续性；不得自动进入 history / storySummary / dynamicWorldSetting / loreEntries / npcProfiles。",
       "- 只有主流程接受并完成运行时结算，或执行离场压缩后，短期镜头缓存才可能升级为 sceneMemoryArchive / recentInteractions 等长期状态。",
       "- npc_belief / falseBeliefs 不得进入 WORLD_PUBLIC 或 confirmed fact。"
+    ].join("\n");
+  }
+
+  function buildNarrativeMainImmersionBlock(player, agentName, eventContext){
+    var normalized = normalizeContextPlayer(player, eventContext);
+    var settings = normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState);
+    var scene = normalizeSceneState(normalized.sceneState);
+    var policy = getGranularityPolicy(settings.granularityPreset);
+    var transitionWarning = getGranularityTransitionWarning(settings.lastGranularity, settings.granularityPreset, settings, scene);
+    var retrieval = retrieveLoreEntries(normalized, eventContext || {});
+    var inlineTimeContext = normalized.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext();
+    return [
+      "【Phase 5 叙事代理紧凑上下文】",
+      "[SCENE_POLICY]",
+      "context_tier = narrative-compact",
+      "granularity = " + settings.granularityPreset + " (" + policy.label + ")",
+      "last_granularity = " + (settings.lastGranularity || "none"),
+      "expected_time_span = " + policy.timeSpan,
+      "soft_output_length_hint = " + policy.outputLength,
+      "detail_level = " + settings.detailLevel,
+      "expanded_output_allowed = " + String(policy.allowExpandedOutput === true),
+      "option_scale = " + settings.optionScale,
+      "allow_time_jump = " + String(settings.allowTimeJump),
+      "lock_current_scene = " + String(settings.lockCurrentScene),
+      "extraction_mode = " + getEffectiveExtractionMode(normalized),
+      "sceneEndReason = " + (scene.sceneEndReason || settings.sceneEndReason || "unknown"),
+      "transition_warning = " + (transitionWarning || "none"),
+      "agent_execution_rule = " + granularityAgentExecutionRule(settings.granularityPreset, agentName),
+      "agent_task_override = " + granularityAgentTaskOverride(settings.granularityPreset, agentName),
+      "time_binding_rule = " + granularityTimeBindingRule(settings.granularityPreset, inlineTimeContext),
+      "grain_rule = 镜头粒度决定本轮展示的时间跨度、场景尺度和细节密度，不是世界事实层级；micro/small 保持当前点位，montage/major_timeskip 必须压缩阶段变化后落回可玩入口。",
+      "closure_rule = 本轮至少推进或确认一个状态、关系、线索、资源或选择后果；可以保留悬念，但必须给玩家下一步抓手。",
+      "",
+      "[TIME_JUMP_CONTEXT]",
+      inlineTimeContext ? [
+        "mode = " + (inlineTimeContext.mode || "unknown"),
+        "oldDate = " + (inlineTimeContext.oldDate || "unknown"),
+        "newDate = " + (inlineTimeContext.newDate || "unknown"),
+        "days = " + (Number.isFinite(Number(inlineTimeContext.days)) ? Number(inlineTimeContext.days) : 0),
+        "targetYearText = " + (inlineTimeContext.targetYearText || "unknown"),
+        "targetAgeText = " + (inlineTimeContext.targetAgeText || "unknown"),
+        "rule = 若前端已推进时间，以本 TIME_JUMP_CONTEXT 为准，避免重复推进。"
+      ].join("\n") : "none",
+      "",
+      "[SCENE_FRAME]",
+      "sceneId = " + (scene.currentSceneId || scene.sceneId || "unknown"),
+      "sceneMode = " + (scene.sceneMode || settings.granularityPreset),
+      "locationId = " + (scene.currentLocationId || scene.locationId || "unknown"),
+      "location = " + (scene.currentLocationText || scene.locationName || normalized.locationState.currentLocation || "unknown"),
+      "currentAction = " + (scene.currentAction || "未指定"),
+      "focus = " + (scene.focus || "未指定"),
+      "mood = " + (scene.mood || "未指定"),
+      "tensionLevel = " + (scene.tensionLevel || "low"),
+      "beatPhase = " + (scene.beatPhase || "open"),
+      "objective = " + (scene.sceneGoal || scene.objective || "未指定"),
+      "sceneConstraints = " + (scene.sceneConstraints || "无"),
+      "interactableObjects = " + (ensureArray(scene.interactableObjects).slice(0, 8).join(", ") || "无"),
+      "active_npcs = " + (ensureArray(scene.activeNpcIds).slice(0, 8).join(", ") || "无"),
+      "",
+      "[SHORT_TERM_SCENE_MEMORY]",
+      formatCompactMainTaskSceneMemory(normalized.shortTermSceneMemory),
+      "",
+      formatLoreBlocks(retrieval),
+      "",
+      formatNpcCards(normalized),
+      "",
+      "[NARRATIVE_AGENT_GUARDRAIL]",
+      "- DIRECTOR 只生成本轮起因/导入，不写正文结果，不直接做状态提取。",
+      "- STORYTELLER 只写本轮叙事结果，不输出 A/B/C 选项、按钮文本或状态 JSON。",
+      "- shortTermSceneMemory 是非正史短期镜头缓存；只有接受并结算后才可能进入长期状态。",
+      "- NPC falseBeliefs 只影响该 NPC 的认知和表达，不得写成 public/confirmed 客观事实。"
     ].join("\n");
   }
 
@@ -2344,7 +2642,7 @@
   }
 
   function buildContextForAgent(player, agentName, eventContext){
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player, eventContext);
     var layers = normalized.knowledgeLayers || {};
     var summaries = normalized.structuredSummaries || {};
     var conflicts = detectSettingConflicts(normalized);
@@ -2410,7 +2708,9 @@
   function buildContextBlock(player, eventContext){
     if (!isObject(player)) return "";
     eventContext = eventContext || {};
-    var context = buildContextForAgent(player, "RUNTIME", eventContext || {});
+    var normalized = normalizePlayer(player || {});
+    var normalizedEventContext = withNormalizedContext(eventContext);
+    var context = buildContextForAgent(normalized, "RUNTIME", normalizedEventContext);
     var conflicts = context.warnings || [];
     var privateFictionBlock = buildPrivateFictionBaselineBlock(eventContext.agentName || "RUNTIME");
     return [
@@ -2431,7 +2731,7 @@
       "【通用状态模块】",
       context.moduleContext,
       "",
-      buildImmersionContextBlock(player, eventContext || {}),
+      buildImmersionContextBlock(normalized, normalizedEventContext),
       "",
       "【状态提取防污染规则】",
       "Phase 4/5 顺序：STORYTELLER 阶段只生成正文；只有用户点击“接受命运并成长”后，才运行 STORYTELLER_DATA / ARCHIVIST 并由运行时结算。",
@@ -2450,6 +2750,14 @@
     return ["PLANNER", "DIRECTOR", "DESIGNER", "ARBITER", "STORYTELLER"].indexOf(agentName) >= 0;
   }
 
+  function isTaskGenerationAgent(agentName){
+    return ["PLANNER", "DESIGNER", "ARBITER"].indexOf(trimText(agentName || "").toUpperCase()) >= 0;
+  }
+
+  function isNarrativeGenerationAgent(agentName){
+    return ["DIRECTOR", "STORYTELLER"].indexOf(trimText(agentName || "").toUpperCase()) >= 0;
+  }
+
   function determineGenerationMode(player, eventContext){
     var normalized = isObject(player) ? player : {};
     var chain = getOpenNarrativeChain(normalized);
@@ -2464,7 +2772,7 @@
   }
 
   function buildNarrativeChainContextBlock(player, agentName, eventContext){
-    var normalized = normalizePlayer(player || {});
+    var normalized = normalizeContextPlayer(player, eventContext);
     var chain = getOpenNarrativeChain(normalized);
     var generationMode = determineGenerationMode(normalized, eventContext || {});
     var lines = [
@@ -2500,10 +2808,88 @@
     return lines.join("\n");
   }
 
+  function formatCompactMainTaskSceneMemory(memory){
+    var source = isObject(memory) ? memory : {};
+    var notes = ensureArray(source.notes).filter(function(note){
+      return !isObject(note) || Number(note.expiresAfterTurns || 0) > 0 || note.expiresAfterTurns === undefined;
+    }).slice(-4).map(function(note){
+      if (isObject(note)) {
+        return "- " + truncateText(note.summary || note.text || note.detail || JSON.stringify(note), 240) + (note.sourceEventId ? " [source:" + note.sourceEventId + "]" : "");
+      }
+      return "- " + truncateText(note, 240);
+    });
+    var threads = ensureArray(source.unresolvedThreads || source.unresolvedMicroPrompts).slice(-4).map(function(item){
+      return "- " + truncateText(isObject(item) ? (item.summary || item.text || JSON.stringify(item)) : item, 220);
+    });
+    return [
+      notes.length ? notes.join("\n") : "- 无短期镜头记忆",
+      threads.length ? "[UNRESOLVED_SCENE_THREADS]\n" + threads.join("\n") : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  function buildCompactMainTaskImmersionBlock(player, agentName, eventContext){
+    var normalized = normalizeContextPlayer(player, eventContext);
+    var settings = normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState);
+    var policy = getGranularityPolicy(settings.granularityPreset);
+    var scene = normalizeSceneState(normalized.sceneState);
+    var transitionWarning = getGranularityTransitionWarning(settings.lastGranularity, settings.granularityPreset, settings, scene);
+    var inlineTimeContext = normalized.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext();
+    return [
+      "【Phase 5 任务代理紧凑上下文】",
+      "[SCENE_POLICY]",
+      "context_tier = task-compact",
+      "granularity = " + settings.granularityPreset + " (" + policy.label + ")",
+      "last_granularity = " + (settings.lastGranularity || "none"),
+      "expected_time_span = " + policy.timeSpan,
+      "soft_output_length_hint = " + policy.outputLength,
+      "detail_level = " + settings.detailLevel,
+      "option_scale = " + settings.optionScale,
+      "allow_time_jump = " + String(settings.allowTimeJump),
+      "lock_current_scene = " + String(settings.lockCurrentScene),
+      "sceneEndReason = " + (scene.sceneEndReason || settings.sceneEndReason || "unknown"),
+      "transition_warning = " + (transitionWarning || "none"),
+      "agent_execution_rule = " + granularityAgentExecutionRule(settings.granularityPreset, agentName),
+      "agent_task_override = " + granularityAgentTaskOverride(settings.granularityPreset, agentName),
+      "time_binding_rule = " + granularityTimeBindingRule(settings.granularityPreset, inlineTimeContext),
+      "",
+      "[TIME_JUMP_CONTEXT]",
+      inlineTimeContext ? [
+        "mode = " + (inlineTimeContext.mode || "unknown"),
+        "oldDate = " + (inlineTimeContext.oldDate || "unknown"),
+        "newDate = " + (inlineTimeContext.newDate || "unknown"),
+        "days = " + (Number.isFinite(Number(inlineTimeContext.days)) ? Number(inlineTimeContext.days) : 0),
+        "targetYearText = " + (inlineTimeContext.targetYearText || "unknown"),
+        "targetAgeText = " + (inlineTimeContext.targetAgeText || "unknown")
+      ].join("\n") : "none",
+      "",
+      "[SCENE_FRAME]",
+      "sceneId = " + (scene.currentSceneId || scene.sceneId || "unknown"),
+      "sceneMode = " + (scene.sceneMode || settings.granularityPreset),
+      "locationId = " + (scene.currentLocationId || scene.locationId || "unknown"),
+      "location = " + (scene.currentLocationText || scene.locationName || normalized.locationState.currentLocation || "unknown"),
+      "currentAction = " + (scene.currentAction || "未指定"),
+      "focus = " + (scene.focus || "未指定"),
+      "mood = " + (scene.mood || "未指定"),
+      "tensionLevel = " + (scene.tensionLevel || "low"),
+      "beatPhase = " + (scene.beatPhase || "open"),
+      "objective = " + (scene.sceneGoal || scene.objective || "未指定"),
+      "active_npcs = " + (ensureArray(scene.activeNpcIds).slice(0, 8).join(", ") || "无"),
+      "",
+      "[SHORT_TERM_SCENE_MEMORY]",
+      formatCompactMainTaskSceneMemory(normalized.shortTermSceneMemory),
+      "",
+      "[TASK_AGENT_CONTEXT_BUDGET]",
+      "budget_rule = 本块只供 PLANNER / DESIGNER / ARBITER 使用；任务代理根据当前日期、长期摘要、最近正式事件、场景框架和输出合同完成关键词、选项或判定，不展开完整 Lore/NPC 卡片。",
+      "lore_rule = 若需要引用世界或人物事实，只使用上方知识分层、长期摘要、最近事件和当前场景中明确给出的内容；不要请求完整正文上下文，不要自行补全未知事实。"
+    ].join("\n");
+  }
+
   function buildMainGenerationContextBlock(player, agentName, eventContext){
     if (!isObject(player)) return "";
     eventContext = eventContext || {};
-    var context = buildContextForAgent(player, agentName || "UNKNOWN", eventContext || {});
+    var normalized = normalizePlayer(player || {});
+    var normalizedEventContext = withNormalizedContext(eventContext);
+    var context = buildContextForAgent(normalized, agentName || "UNKNOWN", normalizedEventContext);
     var conflicts = context.warnings || [];
     var privateFictionBlock = buildPrivateFictionBaselineBlock(agentName || "UNKNOWN");
     var mainSystemGuardrails = String(context.systemGuardrails || "").replace(
@@ -2534,9 +2920,11 @@
       "【最近正式事件】",
       context.recentHistoryContext || "无",
       "",
-      buildImmersionContextBlock(player, eventContext || {}),
+      isNarrativeGenerationAgent(agentName)
+        ? buildNarrativeMainImmersionBlock(normalized, agentName, normalizedEventContext)
+        : buildImmersionContextBlock(normalized, normalizedEventContext),
       "",
-      buildNarrativeChainContextBlock(player, agentName, eventContext || {}),
+      buildNarrativeChainContextBlock(normalized, agentName, normalizedEventContext),
       "",
       "【主生成链路约束】",
       "- 本块用于 PLANNER / DIRECTOR / DESIGNER / ARBITER / STORYTELLER 的主生成上下文。",
@@ -2544,6 +2932,79 @@
       "- STORYTELLER 阶段只生成可供玩家接受或拒绝的正文，不直接写 history、summary、dynamicWorldSetting 或模块状态。",
       "- STORYTELLER 正文不得包含 A/B/C、项目符号式玩家选项、'你觉得——'、'接下来你会怎么做' 等伪选项文本；可停在选择临界点，但选项只能由 DESIGNER 或前端选项区承载。",
       "- 日期、年龄、目标、场景、短期镜头记忆、Lore 分区与 NPC_CARD 必须和本块保持一致。",
+      conflicts.length ? "\n【fixed/dynamic 冲突警告】\n" + conflicts.map(function(item){return "- " + item.suggestion + " fixed: " + item.fixedRule + " / dynamic: " + item.dynamicStatement;}).join("\n") : "",
+      GUARDRAILS_END
+    ].join("\n");
+  }
+
+  function buildMainTaskGenerationContextBlock(player, agentName, eventContext){
+    if (!isObject(player)) return "";
+    eventContext = eventContext || {};
+    var normalized = normalizePlayer(player || {});
+    var normalizedEventContext = withNormalizedContext(eventContext);
+    var context = buildContextForAgent(normalized, agentName || "UNKNOWN", normalizedEventContext);
+    var layers = normalized.knowledgeLayers || {};
+    var summaries = normalized.structuredSummaries || {};
+    var conflicts = context.warnings || [];
+    var privateFictionBlock = buildPrivateFictionBaselineBlock(agentName || "UNKNOWN");
+    var recentHistoryContext = summarizeEntries((normalized.history || []).filter(function(entry){
+      return !entry.status || entry.status === "accepted" || entry.status === "canon";
+    }).slice(-2), 2);
+    return [
+      GUARDRAILS_START,
+      "[A_SITE_V2_MAIN_AGENT_CONTEXT]",
+      "context_tier = task-compact",
+      "agent = " + (agentName || "UNKNOWN"),
+      "",
+      privateFictionBlock,
+      "",
+      "【通用叙事一致性护栏】",
+      "1. 固定设定优先级高于动态设定、摘要、历史事件和模型推测；若冲突，以固定设定为准。",
+      "2. NPC只能依据其知识层、公开信息、亲身经历和合理推断行动，不得自动知道作者设定或未来设定。",
+      "3. 只将已接受的正式事件作为正史；草稿、废稿、失败生成和用户讨论不得进入故事事实。",
+      "4. 主生成阶段不要输出状态提取 JSON、history、summary、dynamicWorldSetting 或模块 patch。",
+      "",
+      "【当前日期与年龄】",
+      context.timeContext,
+      "",
+      "【知识分层简表】",
+      "作者设定（仅约束，不代表角色或NPC知道）：" + truncateText(layers.authorOnlySetting, 520),
+      "主角已知：" + truncateText(layers.protagonistKnownSetting, 420),
+      "核心同伴/系统已知：" + truncateText(layers.companionKnownSetting, 320),
+      "公开信息：" + truncateText(layers.publicKnownSetting, 420),
+      "NPC认知规则：" + truncateText(layers.npcKnowledgeRules, 420),
+      "禁止自动公开的信息：" + truncateText(layers.forbiddenPublicKnowledge, 420),
+      "",
+      "【长期摘要简表】",
+      "身份摘要：" + truncateText(summaries.identitySummary, 320),
+      "时间线摘要：" + truncateText(summaries.timelineSummary, 320),
+      "组织关系摘要：" + truncateText(summaries.affiliationSummary, 280),
+      "居住据点摘要：" + truncateText(summaries.residenceSummary, 260),
+      "关系摘要：" + truncateText(summaries.relationshipSummary, 320),
+      "资源摘要：" + truncateText(summaries.resourceSummary, 260),
+      "秘密摘要：" + truncateText(summaries.secretSummary, 320),
+      "开放线索：" + truncateText(summaries.openThreads, 320),
+      "近期连续性提醒：" + truncateText(summaries.recentContinuityNotes, 320),
+      "",
+      "【状态模块索引】",
+      "身份/马甲：" + summarizeEntries(normalized.identityStates, 3),
+      "组织/阵营：" + summarizeEntries(normalized.affiliationStates, 3),
+      "居住/据点：" + summarizeEntries(normalized.residenceStates, 3),
+      "资源/补给：" + summarizeEntries(normalized.resourceStates, 3),
+      "物品/装备：" + summarizeEntries(normalized.items, 4),
+      "位置/活动范围：" + truncateText(JSON.stringify(normalized.locationState || {}), 320),
+      "",
+      "【最近正式事件】",
+      recentHistoryContext || "无",
+      "",
+      buildCompactMainTaskImmersionBlock(normalized, agentName, normalizedEventContext),
+      "",
+      buildNarrativeChainContextBlock(normalized, agentName, normalizedEventContext),
+      "",
+      "【主生成链路约束】",
+      "- 本紧凑块用于 PLANNER / DESIGNER / ARBITER；DIRECTOR / STORYTELLER 仍使用完整上下文。",
+      "- 本轮只按当前 agent 职责规划关键词、设计选项或裁定行动；不要在主生成阶段输出状态提取 JSON。",
+      "- 日期、年龄、目标、场景、短期镜头记忆和输出合同必须与本块保持一致。",
       conflicts.length ? "\n【fixed/dynamic 冲突警告】\n" + conflicts.map(function(item){return "- " + item.suggestion + " fixed: " + item.fixedRule + " / dynamic: " + item.dynamicStatement;}).join("\n") : "",
       GUARDRAILS_END
     ].join("\n");
@@ -2736,8 +3197,10 @@
   }
 
   function purgeClosedSourcePendingDiffs(player, reason){
+    var storedDiffs = readPendingDiffs();
+    if (isObject(player) && !ensureArray(player.pendingStateDiffs).length && !storedDiffs.length) return player;
     var next = normalizePlayer(player || {});
-    var merged = mergeStateDiffs(readPendingDiffs(), next.pendingStateDiffs);
+    var merged = mergeStateDiffs(storedDiffs, next.pendingStateDiffs);
     var keptForStorage = [];
     var activePending = [];
     var now = new Date().toISOString();
@@ -2763,15 +3226,18 @@
     });
     writePendingDiffs(keptForStorage.slice(0, 30));
     next.pendingStateDiffs = activePending;
-    return normalizePlayer(next);
+    return next;
   }
 
-  async function enqueuePostAcceptanceDiffForEvent(player, storyEvent, diff){
+  async function enqueuePostAcceptanceDiffForEvent(player, storyEvent, diff, options){
+    var opts = options || {};
     var eventId = trimText(storyEvent && storyEvent.id);
     var normalizedDiff = normalizeStateDiff(Object.assign({}, diff || {}, {sourceEventId:eventId}));
-    if (!normalizedDiff || !eventId) return {player: normalizePlayer(player || {}), diff: null, discarded: false};
-    var latest = await getProfileForStoryEvent(eventId).catch(function(){ return null; });
-    var currentProfile = normalizePlayer(player || {});
+    if (!normalizedDiff || !eventId) {
+      return {player: opts.alreadyNormalized && isObject(player) ? player : normalizePlayer(player || {}), diff: null, discarded: false};
+    }
+    var latest = opts.latestProfile !== undefined ? opts.latestProfile : await getProfileForStoryEvent(eventId).catch(function(){ return null; });
+    var currentProfile = opts.alreadyNormalized && isObject(player) ? player : normalizePlayer(player || {});
     var currentCanAccept = canAcceptLateExtractionDiffSync(currentProfile, eventId);
     var latestCanAccept = latest && latest.id ? canAcceptLateExtractionDiffSync(latest, eventId) : false;
     var guardProfile = currentCanAccept ? currentProfile : (latestCanAccept ? latest : (latest && latest.id ? latest : currentProfile));
@@ -2779,12 +3245,15 @@
       var audited = recordDiscardedLateExtraction(guardProfile || player, normalizedDiff, "late extraction arrived after source event was confirmed/cancelled/rejected/superseded");
       audited.pendingStateDiffs = pendingDiffsForProfile(audited);
       if (latest && latest.id) {
-        await saveProfile(audited).catch(function(){});
+        await saveProfile(audited, {alreadyNormalized:true}).catch(function(){});
       }
       console.warn("[A-Site V2] discarded late extraction diff for closed source event:", eventId, normalizedDiff.sourceAgent || normalizedDiff.id);
       return {player: audited, diff: null, discarded: true};
     }
     addPendingDiff(normalizedDiff);
+    if (guardProfile === currentProfile && opts.alreadyNormalized) {
+      return {player: currentProfile, diff: normalizedDiff, discarded: false};
+    }
     return {player: normalizePlayer(guardProfile || player || {}), diff: normalizedDiff, discarded: false};
   }
 
@@ -2866,10 +3335,12 @@
 
   function removePendingDiffsByEventId(sourceEventId){
     var id = trimText(sourceEventId);
-    if (!id) return;
-    writePendingDiffs(readPendingDiffs().filter(function(diff){
+    if (!id) return readPendingDiffs();
+    var nextDiffs = readPendingDiffs().filter(function(diff){
       return !diff || diff.sourceEventId !== id;
-    }));
+    });
+    writePendingDiffs(nextDiffs);
+    return latestPendingStateDiffs;
   }
 
   function storyEventIsAcceptedInProfile(profile, sourceEventId, storyEvent){
@@ -2882,7 +3353,8 @@
     });
   }
 
-  function clearProfilePendingEventQueues(player, sourceEventId, acceptedEvent){
+  function clearProfilePendingEventQueues(player, sourceEventId, acceptedEvent, options){
+    var opts = options || {};
     var id = trimText(sourceEventId);
     if (!id && !isObject(acceptedEvent)) return player;
     var accepted = Object.assign({}, isObject(acceptedEvent) ? acceptedEvent : {}, {id: id || (acceptedEvent && acceptedEvent.id) || ""});
@@ -2893,7 +3365,7 @@
       if (match && event.id) removedIds[event.id] = true;
       return match;
     }
-    var next = clonePlain(player || {});
+    var next = opts.alreadyCloned === true && isObject(player) ? player : clonePlain(player || {});
     next.pendingAcceptedEvents = ensureArray(next.pendingAcceptedEvents).filter(function(event){
       return !shouldRemoveEvent(event);
     });
@@ -2905,9 +3377,11 @@
     next.pendingStateDiffs = ensureArray(next.pendingStateDiffs).filter(function(diff){
       return !diff || (diff.sourceEventId !== id && !removedIds[diff.sourceEventId]);
     });
-    writePendingDiffs(readPendingDiffs().filter(function(diff){
-      return !diff || (diff.sourceEventId !== id && !removedIds[diff.sourceEventId]);
-    }));
+    if (opts.skipStoredPendingDiffCleanup !== true) {
+      writePendingDiffs(readPendingDiffs().filter(function(diff){
+        return !diff || (diff.sourceEventId !== id && !removedIds[diff.sourceEventId]);
+      }));
+    }
     return next;
   }
 
@@ -3143,6 +3617,126 @@
     }).join("\n\n");
   }
 
+  function messagesPromptTextLength(messages){
+    var list = ensureArray(messages);
+    return list.reduce(function(total, message, index){
+      var header = "#" + (index + 1) + " " + String(message && message.role || "user").toUpperCase() + "\n";
+      return total + (index > 0 ? 2 : 0) + header.length + String(message && message.content || "").length;
+    }, 0);
+  }
+
+  function messagesTextIncludes(messages, needle){
+    var target = String(needle || "");
+    if (!target) return false;
+    return ensureArray(messages).some(function(message){
+      return String(message && message.content || "").indexOf(target) >= 0;
+    });
+  }
+
+  function messagesTextMatches(messages, pattern){
+    return ensureArray(messages).some(function(message){
+      var content = String(message && message.content || "");
+      try {
+        if (pattern && pattern.test) {
+          pattern.lastIndex = 0;
+          return pattern.test(content);
+        }
+        return content.indexOf(String(pattern || "")) >= 0;
+      } catch (_) {
+        return false;
+      }
+    });
+  }
+
+  function firstMessagesTextMatch(messages, pattern){
+    var list = ensureArray(messages);
+    for (var i = 0; i < list.length; i += 1) {
+      var content = String(list[i] && list[i].content || "");
+      try {
+        pattern.lastIndex = 0;
+        var match = content.match(pattern);
+        if (match) return match;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function countASiteAgentContractBlocksInMessages(messages){
+    return ensureArray(messages).reduce(function(total, message){
+      return total + countASiteAgentContractBlocks(message && message.content);
+    }, 0);
+  }
+
+  function summarizePromptMarkersFromMessages(messages){
+    var hasWorldPublic = messagesTextIncludes(messages, "[WORLD_PUBLIC]");
+    var hasProtagonistKnown = messagesTextIncludes(messages, "[PROTAGONIST_KNOWN]");
+    var hasAuthorOnly = messagesTextIncludes(messages, "[AUTHOR_ONLY]");
+    var hasNpcBelief = messagesTextIncludes(messages, "[NPC_BELIEF]");
+    var generationModeMatch = firstMessagesTextMatch(messages, /generationMode\s*=\s*([a-z_]+)/);
+    var privateFictionModeMatch = firstMessagesTextMatch(messages, /\[PRIVATE_FICTION_BASELINE\][\s\S]{0,160}\bmode\s*=\s*([a-z_]+)/);
+    return {
+      hasMainContext: messagesTextIncludes(messages, "[A_SITE_V2_MAIN_AGENT_CONTEXT]"),
+      hasPrivateFictionBaseline: messagesTextIncludes(messages, "[PRIVATE_FICTION_BASELINE]"),
+      hasCharacterGenerationDirective: messagesTextIncludes(messages, "[A_SITE_V2_CHARACTER_GENERATION_HARD_DIRECTIVE]"),
+      privateFictionMode: privateFictionModeMatch && privateFictionModeMatch[1] || "",
+      hasScenePolicy: messagesTextIncludes(messages, "[SCENE_POLICY]"),
+      hasSceneFrame: messagesTextIncludes(messages, "[SCENE_FRAME]"),
+      hasShortTermSceneMemory: messagesTextIncludes(messages, "[SHORT_TERM_SCENE_MEMORY]"),
+      hasNarrativeChain: messagesTextIncludes(messages, "[NARRATIVE_CHAIN]"),
+      generationMode: generationModeMatch && generationModeMatch[1] || "",
+      hasChainId: messagesTextIncludes(messages, "chainId = "),
+      hasBeatCount: messagesTextIncludes(messages, "beatCount = "),
+      hasLoreBlock: hasWorldPublic || hasProtagonistKnown || hasAuthorOnly || hasNpcBelief,
+      hasWorldPublic: hasWorldPublic,
+      hasProtagonistKnown: hasProtagonistKnown,
+      hasAuthorOnly: hasAuthorOnly,
+      hasNpcBelief: hasNpcBelief,
+      hasNpcCard: messagesTextIncludes(messages, "[NPC_CARD"),
+      hasPostAcceptMarker: messagesTextIncludes(messages, POST_ACCEPT_MARKER),
+      hasAgentOutputContract: messagesTextIncludes(messages, "[A_SITE_V2_AGENT_OUTPUT_CONTRACT]"),
+      agentContractBlockCount: countASiteAgentContractBlocksInMessages(messages),
+      hasAgentOutputContractReference: messagesTextIncludes(messages, "[A_SITE_V2_AGENT_OUTPUT_CONTRACT_REFERENCE]"),
+      hasExtractionSchema: messagesTextIncludes(messages, "STORYTELLER_DATA 必须输出") || messagesTextIncludes(messages, "ARCHIVIST 必须输出"),
+      hasObjectObject: messagesTextIncludes(messages, "[object Object]")
+    };
+  }
+
+  function shouldKeepFullPromptPreview(){
+    try {
+      if (typeof localStorage !== "undefined" && localStorage.getItem("aSiteV2FullPromptPreview") === "1") return true;
+    } catch (_) {}
+    try {
+      var panel = document.getElementById("a-site-v2-panel");
+      return !!(panel && panel.classList && panel.classList.contains("open"));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function compactPromptPreviewFromMessages(messages){
+    var list = ensureArray(messages);
+    return [
+      "[A_SITE_V2_COMPACT_PROMPT_PREVIEW]",
+      "完整 prompt 预览默认不在热路径拼接；如需完整预览，在浏览器 localStorage 设置 aSiteV2FullPromptPreview=1 后重新生成。",
+      "messageCount = " + list.length,
+      "promptTextLength = " + messagesPromptTextLength(list),
+      "",
+      list.map(function(message, index){
+        var content = String(message && message.content || "");
+        return [
+          "#" + (index + 1) + " " + String(message && message.role || "user").toUpperCase(),
+          "contentLength = " + content.length,
+          "preview = " + content.slice(0, 520)
+        ].join("\n");
+      }).join("\n\n")
+    ].join("\n");
+  }
+
+  function rememberLatestPatchedPrompt(messages){
+    latestPatchedPrompt = shouldKeepFullPromptPreview() ? messagesToPromptText(messages) : compactPromptPreviewFromMessages(messages);
+    return latestPatchedPrompt;
+  }
+
   function formatGoalsForPrompt(player){
     var goals = player && player.goals;
     if (!goals) return "暂无";
@@ -3174,12 +3768,21 @@
       .replace(/主角的愿望与驱动力:\s*\[object Object\]/g, "主角的愿望与驱动力:\n" + goalsText);
   }
 
-  function sanitizePromptRuntimeState(text, player){
-    var value = sanitizePromptObjectLeaks(text, player);
-    if (!isObject(player)) return value;
+  function buildPromptRuntimeSanitizeState(player){
+    if (!isObject(player)) return null;
     var normalized = normalizePlayer(player);
-    var currentTime = trimText(normalized.currentYear || normalized.calendarState && normalized.calendarState.currentDate);
-    var currentAge = trimText(normalized.age);
+    return {
+      currentTime: trimText(normalized.currentYear || normalized.calendarState && normalized.calendarState.currentDate),
+      currentAge: trimText(normalized.age)
+    };
+  }
+
+  function sanitizePromptRuntimeState(text, player, runtimeState){
+    var value = sanitizePromptObjectLeaks(text, player);
+    var state = runtimeState || buildPromptRuntimeSanitizeState(player);
+    if (!state) return value;
+    var currentTime = trimText(state.currentTime);
+    var currentAge = trimText(state.currentAge);
     if (currentTime) {
       value = value
         .replace(/(当前游戏时间\s*[:：])\s*[^\n\r]+/g, "$1 " + currentTime)
@@ -3198,9 +3801,10 @@
   }
 
   function sanitizePayloadMessages(messages, player){
+    var runtimeState = buildPromptRuntimeSanitizeState(player);
     return ensureArray(messages).map(function(message){
       if (!isObject(message)) return message;
-      return Object.assign({}, message, {content: sanitizePromptRuntimeState(message.content, player)});
+      return Object.assign({}, message, {content: sanitizePromptRuntimeState(message.content, player, runtimeState)});
     });
   }
 
@@ -3313,6 +3917,8 @@
       hasNpcCard: value.indexOf("[NPC_CARD") >= 0,
       hasPostAcceptMarker: value.indexOf(POST_ACCEPT_MARKER) >= 0,
       hasAgentOutputContract: value.indexOf("[A_SITE_V2_AGENT_OUTPUT_CONTRACT]") >= 0,
+      agentContractBlockCount: countASiteAgentContractBlocks(value),
+      hasAgentOutputContractReference: value.indexOf("[A_SITE_V2_AGENT_OUTPUT_CONTRACT_REFERENCE]") >= 0,
       hasExtractionSchema: value.indexOf("STORYTELLER_DATA 必须输出") >= 0 || value.indexOf("ARCHIVIST 必须输出") >= 0,
       hasObjectObject: value.indexOf("[object Object]") >= 0
     };
@@ -4714,7 +5320,7 @@
 
   function buildStoryEventFromLegacy(player, event){
     var normalized = normalizePlayer(player || {});
-    var cachedTimeline = latestSavedProfileCache && (!trimText(normalized.id || normalized.profileId) || trimText(latestSavedProfileCache.id || latestSavedProfileCache.profileId) === trimText(normalized.id || normalized.profileId)) ? normalizePlayer(latestSavedProfileCache) : null;
+    var cachedTimeline = getLatestSavedProfileCacheForProfile(normalized);
     var timelineProfile = cachedTimeline || normalized;
     var source = isObject(event) ? event : {};
     var text = pickStoryText(source);
@@ -4981,9 +5587,152 @@
     return normalizePlayer(normalized);
   }
 
+  function compactExtractionTextList(value, limit, charLimit){
+    return ensureArray(value).map(function(item){
+      if (isObject(item)) return truncateText(item.summary || item.detail || item.text || JSON.stringify(item), charLimit || 320);
+      return truncateText(item, charLimit || 320);
+    }).filter(Boolean).slice(-(limit || 4));
+  }
+
+  function compactExtractionSceneMemory(memory){
+    var source = isObject(memory) ? memory : {};
+    return {
+      sceneId: trimText(source.sceneId || source.currentSceneId),
+      notes: compactExtractionTextList(source.notes, 4, 360),
+      lastActions: compactExtractionTextList(source.lastActions, 4, 360),
+      unresolvedThreads: compactExtractionTextList(source.unresolvedMicroPrompts || source.unresolvedThreads, 5, 260),
+      expiresAtSceneChange: source.expiresAtSceneChange !== false
+    };
+  }
+
+  function compactExtractionSceneState(sceneState){
+    var scene = normalizeSceneState(sceneState || {});
+    return {
+      sceneId: scene.sceneId || scene.currentSceneId || "",
+      sceneMode: scene.sceneMode || "",
+      status: scene.status || "",
+      currentLocationText: scene.currentLocationText || scene.locationName || "",
+      currentAction: scene.currentAction || "",
+      focus: scene.focus || "",
+      mood: scene.mood || "",
+      tensionLevel: scene.tensionLevel || "",
+      beatPhase: scene.beatPhase || "",
+      sceneEndReason: scene.sceneEndReason || "",
+      activeNpcIds: ensureArray(scene.activeNpcIds).slice(0, 8)
+    };
+  }
+
+  function compactExtractionSceneControl(player){
+    var normalized = normalizePlayer(player || {});
+    var settings = normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState);
+    return {
+      granularityPreset: settings.granularityPreset,
+      lastGranularity: settings.lastGranularity || "",
+      detailLevel: settings.detailLevel,
+      optionScale: settings.optionScale,
+      extractionMode: getEffectiveExtractionMode(normalized),
+      allowTimeJump: settings.allowTimeJump,
+      lockCurrentScene: settings.lockCurrentScene,
+      sceneEndReason: normalized.sceneState && normalized.sceneState.sceneEndReason || settings.sceneEndReason || ""
+    };
+  }
+
+  function buildExtractionContextBlock(player, agentName){
+    var normalized = normalizePlayer(player || {});
+    var layers = normalized.knowledgeLayers || {};
+    var summaries = normalized.structuredSummaries || {};
+    var conflicts = detectSettingConflicts(normalized);
+    var seasonAndTime = [normalized.calendarState && normalized.calendarState.seasonText, normalized.calendarState && normalized.calendarState.timeOfDayText].filter(Boolean).join(" / ") || "未指定";
+    return [
+      GUARDRAILS_START,
+      "【状态提取护栏】",
+      "1. 只处理已经接受的正文；草稿、废稿、失败生成、用户讨论不得进入正史。",
+      "2. 固定设定优先级高于动态设定、摘要、历史事件和模型推测；事件结果不得自动改写 fixedWorldSetting。",
+      "3. 可能、怀疑、似乎、猜测、误会、传闻、NPC主观看法只能进入 speculations / npcBeliefs / rejectedOrUnconfirmed。",
+      "4. proposedPatches 必须是已接受正文明确支持的最小状态变化；不要为了补全而扩写长期设定。",
+      "",
+      buildPrivateFictionBaselineBlock(agentName || "STORYTELLER_DATA"),
+      "",
+      "【当前日期与年龄】",
+      "当前日期：" + (normalized.calendarState && normalized.calendarState.currentDate || "未知"),
+      "当前显示时间：" + (normalized.currentYear || "未知"),
+      "诞辰/生日基准：" + (normalized.characterAgeState && normalized.characterAgeState.legalBirthDate || "未知"),
+      "年龄显示模式：" + (normalized.characterAgeState && normalized.characterAgeState.ageDisplayMode || "legacy"),
+      "季节/时段：" + seasonAndTime,
+      "",
+      "【知识分层与可知范围】",
+      "作者设定（仅约束，不代表角色或NPC知道）：" + truncateText(layers.authorOnlySetting, 600),
+      "主角已知：" + truncateText(layers.protagonistKnownSetting, 500),
+      "核心同伴/系统已知：" + truncateText(layers.companionKnownSetting, 400),
+      "公开信息：" + truncateText(layers.publicKnownSetting, 500),
+      "NPC认知规则：" + truncateText(layers.npcKnowledgeRules, 500),
+      "禁止自动公开的信息：" + truncateText(layers.forbiddenPublicKnowledge, 500),
+      "",
+      "【长期摘要索引】",
+      "身份摘要：" + truncateText(summaries.identitySummary, 360),
+      "时间线摘要：" + truncateText(summaries.timelineSummary, 360),
+      "组织关系摘要：" + truncateText(summaries.affiliationSummary, 360),
+      "关系摘要：" + truncateText(summaries.relationshipSummary, 360),
+      "资源摘要：" + truncateText(summaries.resourceSummary, 300),
+      "秘密摘要：" + truncateText(summaries.secretSummary, 360),
+      "开放线索：" + truncateText(summaries.openThreads, 360),
+      "近期连续性提醒：" + truncateText(summaries.recentContinuityNotes, 360),
+      "",
+      "【状态模块索引】",
+      "身份/马甲：" + summarizeEntries(normalized.identityStates, 4),
+      "组织/阵营：" + summarizeEntries(normalized.affiliationStates, 4),
+      "居住/据点：" + summarizeEntries(normalized.residenceStates, 4),
+      "资源/补给：" + summarizeEntries(normalized.resourceStates, 4),
+      "位置/活动范围：" + truncateText(JSON.stringify(normalized.locationState || {}), 360),
+      "",
+      "【状态提取防污染规则】",
+      "STORYTELLER_DATA 输出 confirmedFacts、speculations、npcBeliefs、rejectedOrUnconfirmed、proposedPatches、actualElapsedDaysSuggestion。",
+      "ARCHIVIST 只提出 storySummary / dynamicWorldSetting / structuredSummaries 等归档 patch，不得直接覆盖 fixedWorldSetting。",
+      "所有 proposedPatches 必须包含 module、operation、value、reason、confidence。",
+      conflicts.length ? "\n【fixed/dynamic 冲突警告】\n" + conflicts.map(function(item){ return "- " + item.suggestion + " fixed: " + item.fixedRule + " / dynamic: " + item.dynamicStatement; }).join("\n") : "",
+      GUARDRAILS_END
+    ].join("\n");
+  }
+
+  function compactAcceptedTextForExtraction(text, agentName, extractionMode){
+    var value = trimText(text);
+    var agent = trimText(agentName);
+    var mode = trimText(extractionMode);
+    var maxChars = agent === "ARCHIVIST" ? 7000 : 12000;
+    if (mode === "full" && agent !== "ARCHIVIST") maxChars = 16000;
+    if (!value || value.length <= maxChars) {
+      return {
+        text: value,
+        originalLength: value.length,
+        compacted: false,
+        maxChars: maxChars,
+        omittedChars: 0
+      };
+    }
+    var markerBase = "\n\n[EXTRACTION_TEXT_OMITTED {chars} chars; preserved head and tail]\n\n";
+    var headChars = Math.max(1200, Math.floor((maxChars - markerBase.length) * 0.58));
+    var tailChars = Math.max(1200, maxChars - markerBase.length - headChars);
+    var omittedChars = Math.max(0, value.length - headChars - tailChars);
+    var marker = markerBase.replace("{chars}", String(omittedChars));
+    var compacted = value.slice(0, headChars) + marker + value.slice(-tailChars);
+    return {
+      text: compacted,
+      originalLength: value.length,
+      compacted: true,
+      maxChars: maxChars,
+      omittedChars: omittedChars
+    };
+  }
+
   function buildExtractionMessages(player, storyEvent, agentName){
     var normalized = normalizePlayer(player || {});
     var legacyPayload = isObject(storyEvent && storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
+    var extractionMode = getEffectiveExtractionMode(normalized);
+    var acceptedTextBudget = compactAcceptedTextForExtraction(
+      pickStoryText(storyEvent) || trimText(storyEvent && storyEvent.storytellerText),
+      agentName,
+      extractionMode
+    );
     var legacyExtractionContext = {
       selectedKeyword: trimText(legacyPayload.selectedKeyword),
       customThemeText: trimText(legacyPayload.customThemeText),
@@ -5005,18 +5754,22 @@
     var eventPayload = {
       sourceEventId: storyEvent.id,
       eventStatus: storyEvent.status,
-      acceptedText: storyEvent.storytellerText,
+      acceptedText: acceptedTextBudget.text,
+      acceptedTextOriginalLength: acceptedTextBudget.originalLength,
+      acceptedTextCompactedForPrompt: acceptedTextBudget.compacted,
+      acceptedTextPromptMaxChars: acceptedTextBudget.maxChars,
+      acceptedTextOmittedChars: acceptedTextBudget.omittedChars,
       legacyEventContext: legacyExtractionContext,
       playerAction: storyEvent.playerAction,
       arbiterResult: storyEvent.arbiterResult,
       eventDate: storyEvent.eventDate,
       eventYearText: storyEvent.eventYearText,
       timeStepDays: storyEvent.timeStepDays,
-      extractionMode: getEffectiveExtractionMode(normalized),
-      sceneControl: normalized.sceneControl,
-      sceneState: normalized.sceneState,
-      shortTermSceneMemory: normalized.shortTermSceneMemory,
-      nextGranularitySuggestions: normalized.nextGranularitySuggestions
+      extractionMode: extractionMode,
+      sceneControl: compactExtractionSceneControl(normalized),
+      sceneState: compactExtractionSceneState(normalized.sceneState),
+      shortTermSceneMemory: compactExtractionSceneMemory(normalized.shortTermSceneMemory),
+      nextGranularitySuggestions: ensureArray(normalized.nextGranularitySuggestions).slice(0, 3)
     };
     var schemaText = [
       "只输出 JSON object，必须符合 Phase 4 StateDiff schema：",
@@ -5040,7 +5793,7 @@
     }
     schemaText = schemaText.join("\n");
     return [
-      {role:"system", content: buildContextBlock(normalized, {eventText: storyEvent.storytellerText, agentName:agentName}) + "\n\n" + POST_ACCEPT_MARKER + "\n你是 " + agentName + "。你只处理用户已经接受的正文，并输出供运行时结算的状态 diff；不要要求玩家再次确认。"},
+      {role:"system", content: buildExtractionContextBlock(normalized, agentName) + "\n\n" + POST_ACCEPT_MARKER + "\n你是 " + agentName + "。你只处理用户已经接受的正文，并输出供运行时结算的状态 diff；不要要求玩家再次确认。"},
       {role:"user", content: [
         "【已接受正文事件】",
         JSON.stringify(eventPayload, null, 2),
@@ -5048,7 +5801,8 @@
         agentName === "ARCHIVIST"
           ? "任务：只提出 storySummary / dynamicWorldSetting / structuredSummaries 等归档 patch。日常细节不要升级为宏观动态设定。"
           : "任务：从已接受正文提取状态变化、NPC认知、推测与实际时间跨度建议。",
-        "当前提取档位：" + getEffectiveExtractionMode(normalized) + "。standard/full 才应提出长期状态 patch；微动作和小场景中的易失细节优先留在 shortTermSceneMemory，不要升级为长期事实。",
+        "当前提取档位：" + extractionMode + "。standard/full 才应提出长期状态 patch；微动作和小场景中的易失细节优先留在 shortTermSceneMemory，不要升级为长期事实。",
+        acceptedTextBudget.compacted ? "正文因 prompt 预算只保留首尾；若中段缺失导致无法确认，请将相关内容放入 rejectedOrUnconfirmed，不要编造。" : "",
         "",
         schemaText
       ].join("\n")}
@@ -5063,6 +5817,71 @@
     } catch (_) {
       return {};
     }
+  }
+
+  function shouldKeepFullApiLogs(settings){
+    try {
+      if (settings && (settings.keepFullApiLogs === true || settings.fullApiLogs === true || settings.debugFullApiLogs === true)) return true;
+      if (typeof localStorage !== "undefined" && localStorage.getItem("aSiteV2FullApiLogs") === "1") return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function summarizeMessagesForLog(messages){
+    var list = ensureArray(messages);
+    var messageSummaries = list.map(function(item){
+      var content = trimText(item && item.content);
+      return {
+        role: trimText(item && item.role),
+        contentLength: content.length,
+        contentPreview: content.slice(0, 180)
+      };
+    });
+    var largestMessageChars = messageSummaries.reduce(function(max, item){
+      return Math.max(max, Number(item && item.contentLength || 0));
+    }, 0);
+    var maxStoredMessageSummaries = 8;
+    var omittedMessageCount = messageSummaries.length > maxStoredMessageSummaries ? Math.max(0, messageSummaries.length - 7) : 0;
+    if (omittedMessageCount > 0) {
+      messageSummaries = messageSummaries.slice(0, 4).concat([{
+        role: "omitted",
+        contentLength: 0,
+        contentPreview: omittedMessageCount + " message summaries omitted from log preview",
+        omittedCount: omittedMessageCount
+      }], messageSummaries.slice(-3));
+    }
+    return {
+      compacted: true,
+      messageCount: list.length,
+      totalChars: list.reduce(function(total, item){
+        return total + trimText(item && item.content).length;
+      }, 0),
+      largestMessageChars: largestMessageChars,
+      omittedMessageCount: omittedMessageCount,
+      messages: messageSummaries
+    };
+  }
+
+  function summarizeChatCompletionForLog(raw, content){
+    var choice = raw && raw.choices && raw.choices[0] || {};
+    var message = choice.message || {};
+    var usage = raw && raw.usage || {};
+    return {
+      compacted: true,
+      id: raw && raw.id || "",
+      object: raw && raw.object || "",
+      created: raw && raw.created || "",
+      model: raw && raw.model || "",
+      finishReason: choice.finish_reason || choice.finishReason || "",
+      contentLength: trimText(content).length,
+      contentPreview: trimText(content).slice(0, 240),
+      reasoningLength: trimText(message.reasoning_content || message.reasoningContent).length,
+      usage: {
+        promptTokens: usage.prompt_tokens || usage.promptTokens || 0,
+        completionTokens: usage.completion_tokens || usage.completionTokens || 0,
+        totalTokens: usage.total_tokens || usage.totalTokens || 0
+      }
+    };
   }
 
   function getRuntimeLogMirror(profileId){
@@ -5083,9 +5902,147 @@
       ].join("|");
       if (key && seen[key]) return;
       if (key) seen[key] = true;
-      merged.push(item);
+      merged.push(compactSessionLogEntryForStorage(item));
     });
-    return merged.slice(-200);
+    return merged.slice(-SESSION_LOG_LIMIT);
+  }
+
+  function compactLogText(value, limit){
+    var text = typeof value === "string" ? value : String(value == null ? "" : value);
+    var max = Number(limit || 0) > 0 ? Number(limit) : 280;
+    return {
+      type: "text",
+      length: text.length,
+      preview: text.slice(0, max)
+    };
+  }
+
+  function jsonCharLength(value){
+    try {
+      return JSON.stringify(value).length;
+    } catch (_) {
+      return String(value == null ? "" : value).length;
+    }
+  }
+
+  function jsonPreview(value, limit){
+    try {
+      return JSON.stringify(value).slice(0, Number(limit || 0) || 360);
+    } catch (_) {
+      return String(value == null ? "" : value).slice(0, Number(limit || 0) || 360);
+    }
+  }
+
+  function compactMessagesForExport(messages){
+    if (isObject(messages) && messages.compacted === true) {
+      var compactedMessages = ensureArray(messages.messages).map(function(message){
+        return Object.assign({}, message, {
+          contentPreview: trimText(message && message.contentPreview).slice(0, 180)
+        });
+      });
+      var compactedOmittedCount = compactedMessages.length > 8 ? Math.max(0, compactedMessages.length - 7) : 0;
+      if (compactedOmittedCount > 0) {
+        compactedMessages = compactedMessages.slice(0, 4).concat([{
+          role: "omitted",
+          contentLength: 0,
+          contentPreview: compactedOmittedCount + " message summaries omitted from log preview",
+          omittedCount: compactedOmittedCount
+        }], compactedMessages.slice(-3));
+      }
+      return Object.assign({}, messages, {
+        omittedMessageCount: Math.max(Number(messages.omittedMessageCount || 0), compactedOmittedCount),
+        messages: compactedMessages
+      });
+    }
+    if (Array.isArray(messages)) return summarizeMessagesForLog(messages);
+    return compactLogText(messages, 240);
+  }
+
+  function compactLogInputForExport(input){
+    if (!isObject(input)) return compactLogText(input, 260);
+    var out = pickFields(input, [
+      "apiKey","baseUrl","useProxy","apiProxy","model","apiReasoningEffort",
+      "jsonMode","contextInjection"
+    ]);
+    if (input.customRequestBodyJson !== undefined) out.customRequestBodyJson = compactLogText(input.customRequestBodyJson, 180);
+    if (input.messages !== undefined) out.messages = compactMessagesForExport(input.messages);
+    Object.keys(input).forEach(function(key){
+      if (out[key] !== undefined || key === "messages" || key === "customRequestBodyJson") return;
+      var value = input[key];
+      if (isObject(value) || Array.isArray(value) || String(value || "").length > 600) out[key] = compactLogText(jsonPreview(value, 1200), 220);
+      else out[key] = value;
+    });
+    return out;
+  }
+
+  function extractOutputContentForSummary(output){
+    if (!isObject(output)) return trimText(output);
+    if (typeof output.contentPreview === "string") return output.contentPreview;
+    try {
+      var choice = output.choices && output.choices[0] || {};
+      return trimText(choice.message && choice.message.content);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function compactLogOutputForExport(output){
+    if (isObject(output) && output.compacted === true) {
+      return Object.assign({}, output, {
+        contentPreview: trimText(output.contentPreview).slice(0, 240)
+      });
+    }
+    if (isObject(output) && Array.isArray(output.choices)) {
+      return summarizeChatCompletionForLog(output, extractOutputContentForSummary(output));
+    }
+    if (isObject(output) || Array.isArray(output)) {
+      return {
+        compacted: true,
+        originalType: Array.isArray(output) ? "array" : "object",
+        originalChars: jsonCharLength(output),
+        preview: jsonPreview(output, 360)
+      };
+    }
+    return compactLogText(output, 300);
+  }
+
+  function compactExportLogEntry(entry){
+    if (!isObject(entry)) return entry;
+    var originalChars = Number(entry.originalChars || 0) || jsonCharLength(entry);
+    var out = pickFields(entry, ["id","timestamp","step","status","duration","usage"]);
+    out.exportCompacted = true;
+    out.originalChars = originalChars;
+    if (entry.sessionCompacted === true) out.sessionCompacted = true;
+    if (entry.input !== undefined) out.input = compactLogInputForExport(entry.input);
+    if (entry.output !== undefined) out.output = compactLogOutputForExport(entry.output);
+    return out;
+  }
+
+  function compactSessionLogEntryForStorage(entry){
+    if (!isObject(entry)) return entry;
+    if (entry.sessionCompacted === true) return entry;
+    var out = compactExportLogEntry(entry);
+    if (!isObject(out)) return out;
+    delete out.exportCompacted;
+    out.sessionCompacted = true;
+    return out;
+  }
+
+  function compactLogsForExport(logs){
+    var source = ensureArray(logs);
+    return source.map(compactExportLogEntry);
+  }
+
+  function buildLogExportSummary(sourceLogs, exportedLogs){
+    var source = ensureArray(sourceLogs);
+    var exported = ensureArray(exportedLogs);
+    return {
+      compacted: true,
+      sourceCount: source.length,
+      exportedCount: exported.length,
+      sourceChars: jsonCharLength(source),
+      exportedChars: jsonCharLength(exported)
+    };
   }
 
   function rememberRuntimeSessionLog(profileId, entry){
@@ -5105,11 +6062,17 @@
     return false;
   }
 
-  async function recordSessionLog(profileId, entry){
+  async function recordSessionLog(profileId, entry, options){
     if (!entry) return;
-    rememberRuntimeSessionLog(profileId, entry);
-    pushReactConsoleLog(entry);
-    await appendSessionLog(profileId, entry).catch(function(){});
+    var opts = options || {};
+    var storedEntry = opts.keepFull === true ? entry : compactSessionLogEntryForStorage(entry);
+    rememberRuntimeSessionLog(profileId, storedEntry);
+    pushReactConsoleLog(storedEntry);
+    if (opts.flushNow === true) {
+      await appendSessionLog(profileId, storedEntry).catch(function(){});
+    } else {
+      queueSessionLogPersist(profileId, storedEntry);
+    }
   }
 
   async function callChatJson(settings, messages, step, profileId){
@@ -5128,6 +6091,7 @@
     if (settings.supportsJsonMode !== false) body.response_format = {type:"json_object"};
     var fetchImpl = window.__aSiteV2OriginalFetch || window.fetch;
     if (!fetchImpl) throw new Error("fetch 不可用。");
+    var keepFullApiLogs = shouldKeepFullApiLogs(settings);
     var logBase = {
       id: makeId("v2_post_accept_log"),
       timestamp: new Date().toISOString(),
@@ -5142,7 +6106,7 @@
         customRequestBodyJson: settings.customRequestBodyJson || "",
         jsonMode: settings.supportsJsonMode !== false,
         contextInjection: "A_SITE_V2_POST_ACCEPTANCE_EXTRACTION",
-        messages: messages
+        messages: keepFullApiLogs ? messages : summarizeMessagesForLog(messages)
       }
     };
     try {
@@ -5154,8 +6118,9 @@
       if (!response.ok) throw new Error(step + " API Error " + response.status + ": " + await response.text());
       var raw = await response.json();
       var content = raw && raw.choices && raw.choices[0] && raw.choices[0].message && raw.choices[0].message.content || "{}";
+      var compactRaw = keepFullApiLogs ? raw : summarizeChatCompletionForLog(raw, content);
       var successLog = Object.assign({}, logBase, {
-        output: raw,
+        output: compactRaw,
         status: "success",
         duration: Date.now() - startedAt,
         usage: raw && raw.usage ? {
@@ -5164,15 +6129,15 @@
           totalTokens: raw.usage.total_tokens || raw.usage.totalTokens || 0
         } : undefined
       });
-      await recordSessionLog(profileId, successLog);
-      return {content: content, raw: raw};
+      await recordSessionLog(profileId, successLog, {keepFull: keepFullApiLogs});
+      return {content: content, raw: raw, rawForStorage: compactRaw};
     } catch (error) {
       var errorLog = Object.assign({}, logBase, {
         output: error && error.message || String(error || "unknown"),
         status: "error",
         duration: Date.now() - startedAt
       });
-      await recordSessionLog(profileId, errorLog);
+      await recordSessionLog(profileId, errorLog, {keepFull: keepFullApiLogs});
       throw error;
     }
   }
@@ -5498,7 +6463,7 @@
     next.draftHistory = ensureArray(next.draftHistory).filter(function(event){
       return !isObject(event) || event.id !== closure.id;
     }).concat([closure]);
-    next = acceptStoryText(next, closure.id, {skipPostAcceptanceExtraction: !!opts.skipPostAcceptanceExtraction});
+    next = acceptStoryText(next, closure.id, {skipPostAcceptanceExtraction: !!opts.skipPostAcceptanceExtraction, alreadyNormalized:true});
     var afterChain = normalizeNarrativeChain(chain, next);
     afterChain.status = "closure_pending";
     afterChain.pendingClosureEventId = closure.id;
@@ -5614,9 +6579,10 @@
 
   function compressAndLeaveScene(player, reason){
     var next = normalizePlayer(player || {});
-    var beforeCompression = clonePlain(next);
     var notes = ensureArray(next.shortTermSceneMemory.notes).filter(function(note){ return note.summary; });
     var summary = notes.map(function(note){ return note.summary; }).join(" / ");
+    var beforeSceneMemoryArchive = null;
+    var beforeNpcProfiles = null;
     var sourceEventId = "";
     for (var i = notes.length - 1; i >= 0; i -= 1) {
       if (notes[i].sourceEventId) {
@@ -5629,6 +6595,8 @@
       ? "离场压缩短期场景记忆，升级为长期可追踪状态。"
       : "离场压缩短期场景记忆，未找到原始 note sourceEventId，使用生成的 manual_scene_compression id。";
     if (summary) {
+      beforeSceneMemoryArchive = clonePlain(next.sceneMemoryArchive);
+      beforeNpcProfiles = clonePlain(next.npcProfiles);
       next.sceneMemoryArchive = ensureArray(next.sceneMemoryArchive);
       next.sceneMemoryArchive.push({
         id: makeId("scene_archive"),
@@ -5651,7 +6619,7 @@
     }
     if (summary && compressionSourceEventId) {
       next.patchHistory = ensureArray(next.patchHistory);
-      if (!deepEqual(beforeCompression.sceneMemoryArchive, next.sceneMemoryArchive)) {
+      if (!deepEqual(beforeSceneMemoryArchive, next.sceneMemoryArchive)) {
         next.patchHistory.push({
           id: makeId("patch_history"),
           sourceEventId: compressionSourceEventId,
@@ -5661,13 +6629,13 @@
           operation: "add",
           path: "sceneMemoryArchive",
           reason: compressionReason,
-          oldValue: clonePlain(beforeCompression.sceneMemoryArchive),
+          oldValue: clonePlain(beforeSceneMemoryArchive),
           newValue: clonePlain(next.sceneMemoryArchive),
           appliedAt: new Date().toISOString(),
           reversible: true
         });
       }
-      if (!deepEqual(beforeCompression.npcProfiles, next.npcProfiles)) {
+      if (!deepEqual(beforeNpcProfiles, next.npcProfiles)) {
         next.patchHistory.push({
           id: makeId("patch_history"),
           sourceEventId: compressionSourceEventId,
@@ -5677,7 +6645,7 @@
           operation: "update",
           path: "npcProfiles",
           reason: compressionReason,
-          oldValue: clonePlain(beforeCompression.npcProfiles),
+          oldValue: clonePlain(beforeNpcProfiles),
           newValue: clonePlain(next.npcProfiles),
           appliedAt: new Date().toISOString(),
           reversible: true
@@ -5760,79 +6728,132 @@
     });
   }
 
-  async function runPostAcceptanceExtraction(player, storyEvent, options){
-    var normalized = normalizePlayer(player || {});
-    var event = isObject(storyEvent) ? storyEvent : {};
-    var opts = options || {};
-    var pendingDiffs = [];
-    var extractionMode = getEffectiveExtractionMode(normalized);
-    if (opts.forceLegacyStateSettlement && (extractionMode === "light" || extractionMode === "off")) extractionMode = "standard";
-    if (extractionMode === "off") {
-      var textOnly = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildTextAcceptanceOnlyDiff(event, "off"));
-      normalized = normalizePlayer(textOnly.player || normalized);
-      if (textOnly.diff) pendingDiffs.push(textOnly.diff);
-      normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
-      return {player: normalizePlayer(normalized), diffs: pendingDiffs};
+  var postAcceptanceExtractionInFlight = Object.create(null);
+
+  function buildPostAcceptanceExtractionInFlightKey(player, storyEvent, extractionMode){
+    var profileId = trimText(player && (player.id || player.profileId));
+    var eventId = trimText(storyEvent && storyEvent.id);
+    if (!eventId) return "";
+    var sourceHash = trimText(storyEvent && storyEvent.sourceHash);
+    if (!sourceHash) {
+      sourceHash = hashText(trimText(storyEvent && (storyEvent.storytellerText || storyEvent.text || storyEvent.story)).slice(0, 4000));
     }
-    if (extractionMode === "light") {
-      var lightQueued = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildLightExtractionDiff(normalized, event));
-      normalized = normalizePlayer(lightQueued.player || normalized);
-      if (lightQueued.diff) pendingDiffs.push(lightQueued.diff);
-      normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
-      return {player: normalizePlayer(normalized), diffs: pendingDiffs};
-    }
-    try {
-      var settings = await getSettings();
-      var dataResponse = await callChatJson(settings, buildExtractionMessages(normalized, event, "STORYTELLER_DATA"), "STORYTELLER_DATA", normalized.id);
-      var dataDiff = buildDiffFromAgent("STORYTELLER_DATA", dataResponse.content, POST_ACCEPT_MARKER, false);
-      if (dataDiff) {
-        dataDiff.sourceEventId = event.id;
-        dataDiff.sourceAgent = "STORYTELLER_DATA";
-        dataDiff.systemTimeStepDays = event.timeStepDays;
-        dataDiff.rawModelOutput = dataResponse.raw;
-        pendingDiffs.push(dataDiff);
-      }
-      var archivistResponse = await callChatJson(settings, buildExtractionMessages(normalized, event, "ARCHIVIST"), "ARCHIVIST", normalized.id);
-      var archivistDiff = buildDiffFromAgent("ARCHIVIST", archivistResponse.content, POST_ACCEPT_MARKER, false);
-      if (archivistDiff) {
-        archivistDiff.sourceEventId = event.id;
-        archivistDiff.sourceAgent = "ARCHIVIST";
-        archivistDiff.systemTimeStepDays = event.timeStepDays;
-        archivistDiff.rawModelOutput = archivistResponse.raw;
-        pendingDiffs.push(archivistDiff);
-      }
-    } catch (error) {
-      pendingDiffs.push(buildExtractionErrorDiff(event, error));
-    }
-    var explicitSettlementDiff = filterExplicitSettlementDiff(buildExplicitLegacySettlementDiff(normalized, event), pendingDiffs);
-    if (explicitSettlementDiff) pendingDiffs.push(explicitSettlementDiff);
-    if (!pendingDiffs.length) {
-      var fallback = buildFallbackDiffFromLegacyEvent(normalized, event);
-      if (fallback) pendingDiffs.push(fallback);
-    }
-    var queuedDiffs = [];
-    for (var i = 0; i < pendingDiffs.length; i += 1) {
-      var diff = pendingDiffs[i];
-      diff.sourceEventId = event.id;
-      var queued = await enqueuePostAcceptanceDiffForEvent(normalized, event, diff);
-      normalized = normalizePlayer(queued.player || normalized);
-      if (queued.diff) queuedDiffs.push(queued.diff);
-    }
-    pendingDiffs = queuedDiffs;
-    normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
-    return {player: normalizePlayer(normalized), diffs: pendingDiffs};
+    return [profileId || "unknown-profile", eventId, extractionMode || "auto", sourceHash].join("|");
   }
 
-  async function settleAcceptedStoryEventWithLegacyState(player, sourceEventId){
-    var next = normalizePlayer(player || {});
+  async function runPostAcceptanceExtraction(player, storyEvent, options){
+    var opts = options || {};
+    var normalized = opts.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
+    var event = isObject(storyEvent) ? storyEvent : {};
+    var pendingDiffs = [];
+    var extractionMode = getEffectiveExtractionMode(normalized);
+    // Explicit legacy settlement is handled during applyAcceptedEventSettlement.
+    // Do not upgrade light/off scenes to model extraction here; that made the accept button wait on STORYTELLER_DATA.
+    if (extractionMode === "off") {
+      var textOnly = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildTextAcceptanceOnlyDiff(event, "off"), {alreadyNormalized:true});
+      normalized = textOnly.player && textOnly.player !== normalized ? normalizePlayer(textOnly.player) : normalized;
+      if (textOnly.diff) pendingDiffs.push(textOnly.diff);
+      normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
+      return {player: normalized, diffs: pendingDiffs};
+    }
+    if (extractionMode === "light") {
+      var lightQueued = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildLightExtractionDiff(normalized, event), {alreadyNormalized:true});
+      normalized = lightQueued.player && lightQueued.player !== normalized ? normalizePlayer(lightQueued.player) : normalized;
+      if (lightQueued.diff) pendingDiffs.push(lightQueued.diff);
+      normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
+      return {player: normalized, diffs: pendingDiffs};
+    }
+    var inFlightKey = buildPostAcceptanceExtractionInFlightKey(normalized, event, extractionMode);
+    if (inFlightKey && postAcceptanceExtractionInFlight[inFlightKey]) {
+      console.info("[A-Site V2] reused in-flight post-acceptance extraction:", event.id);
+      return postAcceptanceExtractionInFlight[inFlightKey];
+    }
+    var extractionPromise = (async function(){
+      try {
+        var settings = await getSettings();
+        var agentCalls = [
+          {agent: "STORYTELLER_DATA", messages: buildExtractionMessages(normalized, event, "STORYTELLER_DATA")},
+          {agent: "ARCHIVIST", messages: buildExtractionMessages(normalized, event, "ARCHIVIST")}
+        ];
+        var agentResults = await Promise.all(agentCalls.map(function(call){
+          return callChatJson(settings, call.messages, call.agent, normalized.id).then(function(response){
+            return {agent: call.agent, response: response};
+          }, function(error){
+            return {agent: call.agent, error: error};
+          });
+        }));
+        var agentErrors = [];
+        agentResults.forEach(function(result){
+          if (!result) return;
+          if (result.error) {
+            agentErrors.push(result);
+            return;
+          }
+          var response = result.response || {};
+          var diff = buildDiffFromAgent(result.agent, response.content, POST_ACCEPT_MARKER, false);
+          if (diff) {
+            diff.sourceEventId = event.id;
+            diff.sourceAgent = result.agent;
+            diff.systemTimeStepDays = event.timeStepDays;
+            diff.rawModelOutput = response.rawForStorage || response.raw;
+            pendingDiffs.push(diff);
+          }
+        });
+        if (agentErrors.length) {
+          var message = agentErrors.map(function(result){
+            return result.agent + ": " + (result.error && result.error.message || String(result.error || "unknown"));
+          }).join(" | ");
+          pendingDiffs.push(buildExtractionErrorDiff(event, new Error(message)));
+        }
+      } catch (error) {
+        pendingDiffs.push(buildExtractionErrorDiff(event, error));
+      }
+      var explicitSettlementDiff = filterExplicitSettlementDiff(buildExplicitLegacySettlementDiff(normalized, event), pendingDiffs);
+      if (explicitSettlementDiff) pendingDiffs.push(explicitSettlementDiff);
+      if (!pendingDiffs.length) {
+        var fallback = buildFallbackDiffFromLegacyEvent(normalized, event);
+        if (fallback) pendingDiffs.push(fallback);
+      }
+      var latestProfileForEvent = pendingDiffs.length ? await getProfileForStoryEvent(event.id).catch(function(){ return null; }) : null;
+      var queuedDiffs = [];
+      for (var i = 0; i < pendingDiffs.length; i += 1) {
+        var diff = pendingDiffs[i];
+        diff.sourceEventId = event.id;
+        var queued = await enqueuePostAcceptanceDiffForEvent(normalized, event, diff, {
+          alreadyNormalized: true,
+          latestProfile: latestProfileForEvent
+        });
+        normalized = queued.player === normalized ? normalized : normalizePlayer(queued.player || normalized);
+        if (queued.diff) queuedDiffs.push(queued.diff);
+      }
+      pendingDiffs = queuedDiffs;
+      normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
+      return {player: normalized, diffs: pendingDiffs};
+    })();
+    if (inFlightKey) postAcceptanceExtractionInFlight[inFlightKey] = extractionPromise;
+    try {
+      return await extractionPromise;
+    } finally {
+      if (inFlightKey && postAcceptanceExtractionInFlight[inFlightKey] === extractionPromise) {
+        delete postAcceptanceExtractionInFlight[inFlightKey];
+      }
+    }
+  }
+
+  async function settleAcceptedStoryEventWithLegacyState(player, sourceEventId, options){
+    var opts = options || {};
+    var next = opts.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
     var eventId = trimText(sourceEventId);
     var event = findEventById(next, eventId);
     if (!event || event.status !== "accepted_text_pending_state" || !isReviewableStoryEvent(event)) {
-      return applyAcceptedEventSettlement(next, eventId);
+      return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
-    var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true});
-    next = normalizePlayer(extraction && extraction.player || next);
-    return applyAcceptedEventSettlement(next, eventId);
+    if (opts.skipModelExtraction === true) {
+      return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
+    }
+    var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true, alreadyNormalized:true});
+    next = extraction && extraction.player || next;
+    return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
   }
 
   async function schedulePostAcceptanceExtraction(player, storyEvent){
@@ -5848,19 +6869,19 @@
         console.warn("[A-Site V2] skipped extraction for non-reviewable/cancelled story event:", storyEvent.id);
         return;
       }
-      var result = await runPostAcceptanceExtraction(base, storyEvent);
+      var result = await runPostAcceptanceExtraction(base, storyEvent, {alreadyNormalized:true});
       var latestAfterExtraction = await getLatestProfile().catch(function(){ return null; });
       if (latestAfterExtraction && latestAfterExtraction.id === base.id && storyEventIsAcceptedInProfile(latestAfterExtraction, storyEvent.id, storyEvent)) {
         removePendingDiffsByEventId(storyEvent.id);
         latestAfterExtraction.pendingStateDiffs = pendingDiffsForProfile(latestAfterExtraction);
-        await saveProfile(latestAfterExtraction);
+        await saveProfile(latestAfterExtraction, {alreadyNormalized:true});
         console.warn("[A-Site V2] discarded late extraction because story event was already confirmed:", storyEvent.id);
         return;
       }
       var next = normalizePlayer(latestAfterExtraction && latestAfterExtraction.id === base.id ? latestAfterExtraction : result.player);
       next.pendingStateDiffs = pendingDiffsForProfile(next);
       if (!sourceEventIsAwaitingStateConfirmation(next, storyEvent.id) && !ensureArray(result && result.diffs).length) {
-        var savedClosed = await saveProfile(next);
+        var savedClosed = await saveProfile(next, {alreadyNormalized:true});
         if (savedClosed && !savedClosed.__asv2AbortSave) {
           syncReactBridgeProfile(savedClosed);
           scheduleInlineControlsRender();
@@ -5871,7 +6892,7 @@
       next.pendingAcceptedEvents = ensureArray(next.pendingAcceptedEvents).map(function(event){
         return event.id === storyEvent.id ? Object.assign({}, event, {extractionStatus:"pending_diff_ready", extractedAt:new Date().toISOString()}) : event;
       });
-      var savedNext = await saveProfile(next);
+      var savedNext = await saveProfile(next, {alreadyNormalized:true});
       if (savedNext && !savedNext.__asv2AbortSave) {
         syncReactBridgeProfile(savedNext);
         scheduleInlineControlsRender();
@@ -5883,8 +6904,9 @@
   }
 
   function acceptStoryText(player, storyEventId, options){
-    var normalized = normalizePlayer(player || {});
     var opts = options || {};
+    var acceptInputAlreadyNormalized = opts.alreadyNormalized === true && isObject(player);
+    var normalized = acceptInputAlreadyNormalized ? player : normalizePlayer(player || {});
     var id = trimText(storyEventId);
     var pending = readPendingTextEvents().find(function(event){ return event.id === id; });
     var draft = ensureArray(normalized.draftHistory).find(function(event){ return isObject(event) && event.id === id; });
@@ -5907,7 +6929,7 @@
       }]);
       markPendingDiffsRejectedForEvent(id, "正文为空或异常。");
       showToast("本次正文为空或异常，已阻止进入接受流程。", "warn");
-      return normalizePlayer(normalized);
+      return acceptInputAlreadyNormalized ? normalized : normalizePlayer(normalized);
     }
     var storyEvent = Object.assign({}, pending || draft || {id:id}, {
       status: "accepted_text_pending_state",
@@ -5925,7 +6947,7 @@
     if (!opts.skipPostAcceptanceExtraction) {
       window.setTimeout(function(){ schedulePostAcceptanceExtraction(normalized, storyEvent); }, 80);
     }
-    return normalizePlayer(normalized);
+    return acceptInputAlreadyNormalized ? normalized : normalizePlayer(normalized);
   }
 
   function linkPendingDiffsToEvent(storyEvent){
@@ -5978,13 +7000,13 @@
     var prepared = createPendingTextEvent(normalized, currentYearEvent || {});
     var storyEvent = prepared.storyEvent;
     normalized = markSupersededDrafts(normalized, storyEvent);
-    normalized = acceptStoryText(normalized, storyEvent.id, {skipPostAcceptanceExtraction: !!opts.autoCommit});
+    normalized = acceptStoryText(normalized, storyEvent.id, {skipPostAcceptanceExtraction: !!opts.autoCommit, alreadyNormalized:true});
     normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
     normalized.customNextTheme = undefined;
     normalized.customNextThemeMode = undefined;
     normalized.lastV2AcceptedStoryEventId = storyEvent.id;
     normalized.lastPhase4InterceptAt = new Date().toISOString();
-    return normalizePlayer(normalized);
+    return normalized;
   }
 
   function collectSelectedStateDiff(stateDiff){
@@ -6064,8 +7086,9 @@
     return applyProposedPatch(player, {module:"openThreads", operation:"add", value:entry, confidence:"speculative", sourceEventId:sourceEventId});
   }
 
-  function finalizeAcceptedEvent(player, stateDiff){
-    var next = clonePlain(player);
+  function finalizeAcceptedEvent(player, stateDiff, options){
+    var opts = options || {};
+    var next = opts.alreadyCloned === true && isObject(player) ? player : clonePlain(player);
     var sourceEventId = trimText(stateDiff && stateDiff.sourceEventId);
     if (!sourceEventId) return next;
     var drafts = ensureArray(next.draftHistory);
@@ -6085,7 +7108,7 @@
       sourceEvent = stateDiff.sourceStoryEvent;
     }
     if (!sourceEvent || isInvalidStoryText(sourceEvent.storytellerText || sourceEvent.text || sourceEvent.story)) {
-      return clearProfilePendingEventQueues(next, sourceEventId, sourceEvent || {id:sourceEventId});
+      return clearProfilePendingEventQueues(next, sourceEventId, sourceEvent || {id:sourceEventId}, {alreadyCloned:true});
     }
     var storyEvent = Object.assign({}, sourceEvent, {
       status: "accepted",
@@ -6180,7 +7203,7 @@
     next.history = ensureArray(next.history).filter(function(entry){ return !isObject(entry) || entry.id !== historyEntry.id; }).concat([historyEntry]);
     next.canonHistory = ensureArray(next.canonHistory).filter(function(entry){ return !isObject(entry) || entry.id !== storyEvent.id; }).concat([storyEvent]);
     next.eventCount = Math.max(Number(next.eventCount || 0), ensureArray(next.history).filter(function(entry){ return !entry.status || entry.status === "accepted" || entry.status === "canon"; }).length);
-    next = clearProfilePendingEventQueues(next, sourceEventId, storyEvent);
+    next = clearProfilePendingEventQueues(next, sourceEventId, storyEvent, {alreadyCloned:true});
     removePendingTextEventsMatching(storyEvent);
     if (storyEvent.sourceChainId) {
       next = markNarrativeChainCommitted(next, storyEvent.sourceChainId, storyEvent.id);
@@ -6213,7 +7236,7 @@
     selected.proposedPatches.forEach(function(patch){
       next = applyProposedPatchWithHistory(next, Object.assign({}, patch, {sourceEventId: sourceEventId || patch.sourceEventId}), selected);
     });
-    next = finalizeAcceptedEvent(next, selected);
+    next = finalizeAcceptedEvent(next, selected, {alreadyCloned:true});
     selected.status = "accepted";
     selected.reviewedAt = new Date().toISOString();
     next.stateDiffHistory = ensureArray(next.stateDiffHistory).concat([selected]);
@@ -6240,6 +7263,18 @@
     });
   }
 
+  function withInternalIdbNormalizeBypass(factory){
+    if (typeof window === "undefined" || typeof factory !== "function") return factory && factory();
+    var previous = window.__aSiteV2InternalIdbNormalizeBypass;
+    window.__aSiteV2InternalIdbNormalizeBypass = true;
+    try {
+      return factory();
+    } finally {
+      if (previous === undefined) delete window.__aSiteV2InternalIdbNormalizeBypass;
+      else window.__aSiteV2InternalIdbNormalizeBypass = previous;
+    }
+  }
+
   async function getLatestCheckpointForProfileRecord(profileId){
     var id = trimText(profileId);
     if (!id) return null;
@@ -6254,17 +7289,13 @@
       var usedIndex = false;
       var request;
       try {
-        request = store.index("by-profile").getAll(id);
+        request = withInternalIdbNormalizeBypass(function(){ return store.index("by-profile").getAll(id); });
         usedIndex = true;
       } catch (_) {
-        request = store.getAll();
+        request = withInternalIdbNormalizeBypass(function(){ return store.getAll(); });
       }
       request.onsuccess = function(){
-        var checkpoints = ensureArray(request.result).filter(function(item){
-          return isObject(item) && (usedIndex || trimText(item.profileId) === id);
-        });
-        checkpoints.sort(function(a, b){ return checkpointTimestamp(b) - checkpointTimestamp(a); });
-        resolve(checkpoints[0] || null);
+        resolve(selectLatestCheckpoint(request.result, id, usedIndex) || null);
       };
       request.onerror = function(){ resolve(null); };
       tx.oncomplete = function(){ db.close(); };
@@ -6273,28 +7304,43 @@
   }
 
   function mergeProfileWithCheckpoint(profile, checkpoint){
-    var base = clonePlain(profile || {});
-    if (isObject(checkpoint)) {
-      if (isObject(checkpoint.playerState)) {
-        var checkpointState = clonePlain(checkpoint.playerState);
-        if (!profileCommittedProgressAhead(base, checkpointState)) {
-          base = Object.assign({}, base, checkpointState);
-        } else {
-          base.__asv2SkippedOlderCheckpointId = checkpoint.id || "";
-        }
+    var source = isObject(profile) ? profile : {};
+    if (!isObject(checkpoint)) return normalizePlayer(source);
+    var base = source;
+    var copied = false;
+    function ensureMutable(){
+      if (!copied) {
+        base = Object.assign({}, base);
+        copied = true;
       }
-      base.id = trimText(base.id || checkpoint.profileId || profile && profile.id);
-      base.name = trimText(base.name || checkpoint.playerName || checkpoint.name);
-      base.era = trimText(base.era || checkpoint.era);
-      if (/^0\s*岁/.test(trimText(base.age)) && trimText(checkpoint.age) && !/^0\s*岁/.test(trimText(checkpoint.age))) {
-        base.age = trimText(checkpoint.age);
-      }
-      if ((!base.currentYear || trimText(base.currentYear).indexOf("2026") >= 0) && trimText(checkpoint.year)) {
-        base.currentYear = trimText(checkpoint.year);
-      }
-      base.lastUpdated = Math.max(Number(base.lastUpdated || 0), checkpointTimestamp(checkpoint));
-      base.__asv2MergedCheckpointId = checkpoint.id || "";
     }
+    function setIfChanged(field, value){
+      if (base[field] === value) return;
+      ensureMutable();
+      base[field] = value;
+    }
+    if (isObject(checkpoint.playerState)) {
+      var checkpointState = checkpoint.playerState;
+      if (!profileCommittedProgressAhead(source, checkpointState)) {
+        base = Object.assign({}, source, checkpointState);
+        copied = true;
+      } else {
+        ensureMutable();
+        base.__asv2SkippedOlderCheckpointId = checkpoint.id || "";
+      }
+    }
+    setIfChanged("id", trimText(base.id || checkpoint.profileId || source.id));
+    setIfChanged("name", trimText(base.name || checkpoint.playerName || checkpoint.name));
+    setIfChanged("era", trimText(base.era || checkpoint.era));
+    if (/^0\s*岁/.test(trimText(base.age)) && trimText(checkpoint.age) && !/^0\s*岁/.test(trimText(checkpoint.age))) {
+      setIfChanged("age", trimText(checkpoint.age));
+    }
+    if ((!base.currentYear || trimText(base.currentYear).indexOf("2026") >= 0) && trimText(checkpoint.year)) {
+      setIfChanged("currentYear", trimText(checkpoint.year));
+    }
+    var mergedLastUpdated = Math.max(Number(base.lastUpdated || 0), checkpointTimestamp(checkpoint));
+    if (mergedLastUpdated) setIfChanged("lastUpdated", mergedLastUpdated);
+    if (checkpoint.id) setIfChanged("__asv2MergedCheckpointId", checkpoint.id || "");
     return normalizePlayer(base);
   }
 
@@ -6307,21 +7353,74 @@
   async function getAllProfiles(){
     var db = await openDb();
     return new Promise(function(resolve, reject){
-      var tx = db.transaction("profiles", "readonly");
-      var request = tx.objectStore("profiles").getAll();
-      request.onsuccess = function(){ resolve(request.result || []); };
-      request.onerror = function(){ reject(request.error || new Error("Read profiles failed")); };
-      tx.oncomplete = function(){ db.close(); };
-    }).then(function(profiles){
-      return Promise.all(ensureArray(profiles).map(function(profile){ return mergeProfileWithLatestCheckpoint(profile); }));
+      var hasCheckpoints = db.objectStoreNames && db.objectStoreNames.contains("checkpoints");
+      var tx = db.transaction(hasCheckpoints ? ["profiles", "checkpoints"] : ["profiles"], "readonly");
+      var profiles = [];
+      var checkpoints = [];
+      var profileRequest = withInternalIdbNormalizeBypass(function(){ return tx.objectStore("profiles").getAll(); });
+      profileRequest.onsuccess = function(){ profiles = profileRequest.result || []; };
+      profileRequest.onerror = function(){
+        reject(profileRequest.error || new Error("Read profiles failed"));
+      };
+      if (hasCheckpoints) {
+        var checkpointRequest = withInternalIdbNormalizeBypass(function(){ return tx.objectStore("checkpoints").getAll(); });
+        checkpointRequest.onsuccess = function(){ checkpoints = checkpointRequest.result || []; };
+        checkpointRequest.onerror = function(event){
+          if (event && typeof event.preventDefault === "function") event.preventDefault();
+          checkpoints = [];
+        };
+      }
+      tx.oncomplete = function(){
+        db.close();
+        try {
+          var latestCheckpoints = buildLatestCheckpointMap(checkpoints);
+          resolve(ensureArray(profiles).map(function(profile){
+            var id = trimText(profile && (profile.id || profile.profileId));
+            return mergeProfileWithCheckpoint(profile, id ? latestCheckpoints[id] : null);
+          }));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      tx.onerror = function(){
+        db.close();
+        reject(tx.error || new Error("Read profiles failed"));
+      };
     });
   }
 
-  async function getLatestProfile(){
-    var profiles = await getAllProfiles();
-    if (!profiles.length) return null;
-    profiles.sort(function(a, b){ return Number(b.lastUpdated || 0) - Number(a.lastUpdated || 0); });
-    return profiles[0];
+  async function getLatestProfile(options){
+    var opts = options || {};
+    var startedAt = runtimeNow();
+    try {
+      var cachedProfile = opts.skipLatestSavedCache === true ? null : getLatestSavedProfileCacheForProfile(null);
+      if (cachedProfile && !isLikelyDefaultBlankProfile(cachedProfile)) {
+        var visibleNameForCache = getVisibleProfileName();
+        var visibleYearForCache = getVisibleYearNumber();
+        var cacheNameMatches = !visibleNameForCache || profileNameMatchesVisible(cachedProfile, visibleNameForCache);
+        var cacheYearMatches = !(typeof visibleYearForCache === "number" && Number.isFinite(visibleYearForCache)) || profileYearMatchesVisible(cachedProfile, visibleYearForCache);
+        if (cacheNameMatches && cacheYearMatches) {
+          recordRuntimeTiming("getLatestProfile", startedAt, Object.assign({
+            status:"ok",
+            source:"latest-saved-cache",
+            visibleNameMatched:!!visibleNameForCache,
+            visibleYearMatched:typeof visibleYearForCache === "number" && Number.isFinite(visibleYearForCache)
+          }, buildRuntimeProfileTimingDetail(cachedProfile)), 45);
+          return cachedProfile;
+        }
+      }
+      var profiles = await getAllProfiles();
+      if (!profiles.length) {
+        recordRuntimeTiming("getLatestProfile", startedAt, {status:"empty", profileCount:0}, 80);
+        return null;
+      }
+      profiles.sort(function(a, b){ return Number(b.lastUpdated || 0) - Number(a.lastUpdated || 0); });
+      recordRuntimeTiming("getLatestProfile", startedAt, {status:"ok", profileCount:profiles.length}, 80);
+      return profiles[0];
+    } catch (error) {
+      recordRuntimeTiming("getLatestProfile", startedAt, {status:"error", error:String(error && error.message || error)}, 0);
+      throw error;
+    }
   }
 
   function getVisibleProfileName(){
@@ -6386,11 +7485,12 @@
     return normalizePlayer(next, {currentDate: formatDate(visibleDate)});
   }
 
-  function getReactBridgeProfile(){
+  function getReactBridgeProfile(options){
+    var opts = options || {};
     var bridge = window.__ASiteV2ReactBridge;
     try {
       var snapshot = bridge && typeof bridge.getSnapshot === "function" ? bridge.getSnapshot() : null;
-      if (snapshot && isObject(snapshot.player)) return normalizePlayer(snapshot.player);
+      if (snapshot && isObject(snapshot.player)) return opts.skipNormalize ? snapshot.player : normalizePlayer(snapshot.player);
     } catch (error) {
       console.warn("[A-Site V2] React bridge profile read failed:", error);
     }
@@ -6407,40 +7507,95 @@
     }
   }
 
-  async function getActiveProfile(){
-    var bridgeProfile = getReactBridgeProfile();
-    if (bridgeProfile && !isLikelyDefaultBlankProfile(bridgeProfile)) return bridgeProfile;
-    var profiles = await getAllProfiles();
-    if (!profiles.length) return null;
-    var visibleName = getVisibleProfileName();
-    var visibleYear = getVisibleYearNumber();
-    var candidates = profiles.slice();
-    if (visibleName) {
-      var byName = candidates.filter(function(profile){ return profileNameMatchesVisible(profile, visibleName); });
-      if (byName.length) candidates = byName;
+  async function getActiveProfile(options){
+    var opts = options || {};
+    var startedAt = runtimeNow();
+    try {
+      var bridgeProfile = getReactBridgeProfile({skipNormalize: !!opts.skipBridgeNormalize});
+      if (bridgeProfile && !isLikelyDefaultBlankProfile(bridgeProfile)) {
+        recordRuntimeTiming("getActiveProfile", startedAt, Object.assign({
+          status:"ok",
+          source:"react-bridge",
+          bridgeNormalized: !opts.skipBridgeNormalize
+        }, buildRuntimeProfileTimingDetail(bridgeProfile)), 60);
+        return bridgeProfile;
+      }
+      var cachedProfile = opts.skipLatestSavedCache === true ? null : getLatestSavedProfileCacheForProfile(null);
+      if (cachedProfile && !isLikelyDefaultBlankProfile(cachedProfile)) {
+        var visibleNameForCache = getVisibleProfileName();
+        var visibleYearForCache = getVisibleYearNumber();
+        var cacheNameMatches = !visibleNameForCache || profileNameMatchesVisible(cachedProfile, visibleNameForCache);
+        var cacheYearMatches = !(typeof visibleYearForCache === "number" && Number.isFinite(visibleYearForCache)) || profileYearMatchesVisible(cachedProfile, visibleYearForCache);
+        if (cacheNameMatches && cacheYearMatches) {
+          recordRuntimeTiming("getActiveProfile", startedAt, Object.assign({
+            status:"ok",
+            source:"latest-saved-cache",
+            visibleNameMatched:!!visibleNameForCache,
+            visibleYearMatched:typeof visibleYearForCache === "number" && Number.isFinite(visibleYearForCache)
+          }, buildRuntimeProfileTimingDetail(cachedProfile)), 45);
+          return cachedProfile;
+        }
+      }
+      var profiles = await getAllProfiles();
+      if (!profiles.length) {
+        recordRuntimeTiming("getActiveProfile", startedAt, {status:"empty", source:"indexeddb", profileCount:0}, 80);
+        return null;
+      }
+      var visibleName = getVisibleProfileName();
+      var visibleYear = getVisibleYearNumber();
+      var candidates = profiles.slice();
+      if (visibleName) {
+        var byName = candidates.filter(function(profile){ return profileNameMatchesVisible(profile, visibleName); });
+        if (byName.length) candidates = byName;
+      }
+      if (typeof visibleYear === "number" && Number.isFinite(visibleYear)) {
+        var byYear = candidates.filter(function(profile){ return profileYearMatchesVisible(profile, visibleYear); });
+        if (byYear.length) candidates = byYear;
+      }
+      candidates.sort(function(a, b){ return Number(b.lastUpdated || 0) - Number(a.lastUpdated || 0); });
+      recordRuntimeTiming("getActiveProfile", startedAt, Object.assign({
+        status:"ok",
+        source:"indexeddb",
+        profileCount:profiles.length,
+        candidateCount:candidates.length,
+        visibleNameMatched:!!visibleName,
+        visibleYearMatched:typeof visibleYear === "number" && Number.isFinite(visibleYear)
+      }, buildRuntimeProfileTimingDetail(candidates[0])), 80);
+      return candidates[0];
+    } catch (error) {
+      recordRuntimeTiming("getActiveProfile", startedAt, {status:"error", error:String(error && error.message || error)}, 0);
+      throw error;
     }
-    if (typeof visibleYear === "number" && Number.isFinite(visibleYear)) {
-      var byYear = candidates.filter(function(profile){ return profileYearMatchesVisible(profile, visibleYear); });
-      if (byYear.length) candidates = byYear;
-    }
-    candidates.sort(function(a, b){ return Number(b.lastUpdated || 0) - Number(a.lastUpdated || 0); });
-    return candidates[0];
   }
 
-  async function saveProfile(profile){
-    var db = await openDb();
-    var normalized = preserveInlineTimeJumpContext(normalizePlayer(profile), profile);
-    var previousCache = latestSavedProfileCache ? normalizePlayer(latestSavedProfileCache) : null;
+  async function saveProfile(profile, options){
+    var opts = options || {};
+    var startedAt = runtimeNow();
+    var saveProfileInputAlreadyNormalized = opts.alreadyNormalized === true && isObject(profile);
+    var initialTimingDetail = Object.assign({}, buildRuntimeProfileTimingDetail(profile), {
+      inputAlreadyNormalized: saveProfileInputAlreadyNormalized
+    });
+    var db = null;
+    try {
+      db = await openDb();
+    } catch (error) {
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"error_open_db", error:String(error && error.message || error)}), 0);
+      throw error;
+    }
+    var normalized = saveProfileInputAlreadyNormalized ? profile : normalizePlayer(profile);
+    normalized = preserveInlineTimeJumpContext(normalized, profile);
+    var previousCache = getLatestSavedProfileCacheForProfile(normalized);
     if (isLikelyDefaultBlankProfile(normalized)) {
       db.close();
       showToast("检测到默认坏档写入（0岁/空历史），已阻止覆盖当前存档。请重新导入最近的完整存档后再测试。", "warn");
       normalized.__asv2AbortSave = true;
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"blocked_default_blank"}), 80);
       return normalized;
     }
     var guardSnapshot = getCommittedWriteGuardSnapshot(normalized);
     if (guardSnapshot && profileCommittedProgressAhead(guardSnapshot, normalized)) {
       db.close();
-      latestSavedProfileCache = normalizePlayer(guardSnapshot);
+      rememberLatestSavedProfileCache(guardSnapshot, false);
       console.warn("[A-Site V2] blocked stale profile save with committed guard snapshot:", {
         incomingEventCount: Number(normalized.eventCount || 0) || 0,
         guardEventCount: Number(guardSnapshot.eventCount || 0) || 0,
@@ -6448,6 +7603,7 @@
         guardHistory: ensureArray(guardSnapshot.history).length,
         guard: recentCommittedWriteGuard
       });
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"blocked_committed_guard"}), 80);
       return guardSnapshot;
     }
     if (previousCache && profileIdentityMatches(previousCache, normalized) && profileFallsBehindCommittedGuard(normalized) && profileCommittedProgressAhead(previousCache, normalized)) {
@@ -6459,31 +7615,54 @@
         cachedHistory: ensureArray(previousCache.history).length,
         guard: recentCommittedWriteGuard
       });
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"blocked_previous_cache_guard"}), 80);
       return previousCache;
     }
     if (!profileHasActiveSettlementWork(normalized) && previousCache && profileIdentityMatches(previousCache, normalized) && profileLooksNewerForExport(previousCache, normalized)) {
       db.close();
-      var protectedCache = normalizePlayer(previousCache);
+      var protectedCache = previousCache;
       console.warn("[A-Site V2] blocked stale profile save from overwriting newer accepted state:", {
         incomingEventCount: Number(normalized.eventCount || 0) || 0,
         cachedEventCount: Number(protectedCache.eventCount || 0) || 0,
         incomingHistory: ensureArray(normalized.history).length,
         cachedHistory: ensureArray(protectedCache.history).length
       });
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"blocked_newer_cache"}), 80);
       return protectedCache;
     }
+    normalized = clearArchivedConsumedCustomTheme(normalized, "save_profile_archived_custom_theme");
+    normalized = compactConsumedPromptFieldsForProfile(normalized);
     normalized.lastUpdated = Date.now();
     return new Promise(function(resolve, reject){
       var tx = db.transaction("profiles", "readwrite");
-      tx.objectStore("profiles").put(normalized);
+      withInternalIdbNormalizeBypass(function(){ tx.objectStore("profiles").put(normalized); });
       tx.oncomplete = function(){ db.close(); resolve(normalized); };
       tx.onerror = function(){ reject(tx.error || new Error("Save profile failed")); };
     }).then(function(saved){
-      latestSavedProfileCache = normalizePlayer(saved);
+      rememberLatestSavedProfileCache(saved, true);
       if (previousCache && profileIdentityMatches(previousCache, saved) && profileCommittedProgressAhead(saved, previousCache)) {
-        rememberCommittedWriteGuard(saved, "saveProfile committed progress ahead of previous cache");
+        rememberCommittedWriteGuard(saved, "saveProfile committed progress ahead of previous cache", {alreadyNormalized:true});
       }
-      return syncLatestCheckpointForProfile(saved).then(function(){ return saved; });
+      if (opts.syncCheckpointNow === true) {
+        return syncLatestCheckpointForProfile(saved, {alreadyNormalized:true}).then(function(){
+          recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, buildRuntimeProfileTimingDetail(saved), {
+            status:"saved",
+            inputAlreadyNormalized: saveProfileInputAlreadyNormalized,
+            checkpointSync:"sync"
+          }), 80);
+          return saved;
+        });
+      }
+      queueCheckpointSyncForProfile(saved);
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, buildRuntimeProfileTimingDetail(saved), {
+        status:"saved",
+        inputAlreadyNormalized: saveProfileInputAlreadyNormalized,
+        checkpointSync:"queued"
+      }), 80);
+      return saved;
+    }).catch(function(error){
+      recordRuntimeTiming("saveProfile", startedAt, Object.assign({}, initialTimingDetail, {status:"error", error:String(error && error.message || error)}), 0);
+      throw error;
     });
   }
 
@@ -6492,8 +7671,39 @@
     return Number(checkpoint.timestamp || checkpoint.lastUpdated || checkpoint.updatedAt || checkpoint.createdAt || 0) || 0;
   }
 
-  function profileCheckpointSummary(profile){
-    var normalized = normalizePlayer(profile || {});
+  function selectLatestCheckpoint(records, profileId, usedIndex){
+    var id = trimText(profileId);
+    var latest = null;
+    var latestTimestamp = -1;
+    ensureArray(records).forEach(function(item){
+      if (!isObject(item)) return;
+      if (!usedIndex && id && trimText(item.profileId) !== id) return;
+      var timestamp = checkpointTimestamp(item);
+      if (!latest || timestamp > latestTimestamp) {
+        latest = item;
+        latestTimestamp = timestamp;
+      }
+    });
+    return latest;
+  }
+
+  function buildLatestCheckpointMap(records){
+    var map = Object.create(null);
+    ensureArray(records).forEach(function(item){
+      if (!isObject(item)) return;
+      var id = trimText(item.profileId);
+      if (!id) return;
+      var timestamp = checkpointTimestamp(item);
+      var existing = map[id];
+      if (!existing || timestamp > checkpointTimestamp(existing)) {
+        map[id] = item;
+      }
+    });
+    return map;
+  }
+
+  function profileCheckpointSummary(profile, options){
+    var normalized = options && options.alreadyNormalized && isObject(profile) ? profile : normalizePlayer(profile || {});
     var latestHistory = latestAcceptedHistoryEntry(normalized);
     var text = latestHistory ? trimText(latestHistory.text || latestHistory.storytellerText || latestHistory.summary) : "";
     return (text || trimText(normalized.summary || normalized.storySummary || normalized.dynamicWorldSetting)).slice(0, 220);
@@ -6514,8 +7724,8 @@
     return ageZero && hasNoCoreState && defaultStory && defaultDate;
   }
 
-  function buildSyncedCheckpoint(checkpoint, profile){
-    var normalized = normalizePlayer(profile || {});
+  function buildSyncedCheckpoint(checkpoint, profile, options){
+    var normalized = options && options.alreadyNormalized && isObject(profile) ? profile : normalizePlayer(profile || {});
     var next = clonePlain(checkpoint || {});
     next.profileId = normalized.id || next.profileId;
     next.playerState = normalized;
@@ -6524,7 +7734,7 @@
     next.era = normalized.era || next.era;
     next.age = normalized.age || next.age;
     next.year = normalized.currentYear || next.year;
-    next.summary = profileCheckpointSummary(normalized) || next.summary;
+    next.summary = profileCheckpointSummary(normalized, {alreadyNormalized:true}) || next.summary;
     next.updatedAt = Date.now();
     next.lastUpdated = Date.now();
     if (!next.timestamp) next.timestamp = Date.now();
@@ -6532,8 +7742,8 @@
     return next;
   }
 
-  async function syncLatestCheckpointForProfile(profile){
-    var normalized = normalizePlayer(profile || {});
+  async function syncLatestCheckpointForProfile(profile, options){
+    var normalized = options && options.alreadyNormalized && isObject(profile) ? profile : normalizePlayer(profile || {});
     var profileId = trimText(normalized.id || normalized.profileId);
     if (!profileId) return null;
     var db = await openDb().catch(function(){ return null; });
@@ -6547,22 +7757,74 @@
       var usedIndex = false;
       var request;
       try {
-        request = store.index("by-profile").getAll(profileId);
+        request = withInternalIdbNormalizeBypass(function(){ return store.index("by-profile").getAll(profileId); });
         usedIndex = true;
       } catch (_) {
-        request = store.getAll();
+        request = withInternalIdbNormalizeBypass(function(){ return store.getAll(); });
       }
       request.onsuccess = function(){
-        var checkpoints = ensureArray(request.result).filter(function(item){
-          return isObject(item) && (usedIndex || trimText(item.profileId) === profileId);
-        });
-        if (!checkpoints.length) return;
-        checkpoints.sort(function(a, b){ return checkpointTimestamp(b) - checkpointTimestamp(a); });
-        store.put(buildSyncedCheckpoint(checkpoints[0], normalized));
+        var latestCheckpoint = selectLatestCheckpoint(request.result, profileId, usedIndex);
+        if (!latestCheckpoint) return;
+        withInternalIdbNormalizeBypass(function(){ store.put(buildSyncedCheckpoint(latestCheckpoint, normalized, {alreadyNormalized:true})); });
       };
       request.onerror = function(){};
       tx.oncomplete = function(){ db.close(); resolve(normalized); };
       tx.onerror = function(){ db.close(); resolve(normalized); };
+    });
+  }
+
+  function queueCheckpointSyncForProfile(profile){
+    if (!isObject(profile)) return;
+    var profileId = trimText(profile.id || profile.profileId);
+    if (!profileId) return;
+    pendingCheckpointSync[profileId] = profile;
+    scheduleCheckpointSyncFlush();
+  }
+
+  function scheduleCheckpointSyncFlush(){
+    if (checkpointSyncTimer || checkpointSyncActive) return;
+    var run = function(){
+      checkpointSyncTimer = 0;
+      flushQueuedCheckpointSync();
+    };
+    try {
+      if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+        checkpointSyncTimer = window.requestIdleCallback(run, {timeout: CHECKPOINT_SYNC_DEBOUNCE_MS});
+        return;
+      }
+    } catch (_) {}
+    checkpointSyncTimer = setTimeout(run, CHECKPOINT_SYNC_DEBOUNCE_MS);
+  }
+
+  function flushQueuedCheckpointSync(){
+    if (checkpointSyncActive) return;
+    var queued = pendingCheckpointSync;
+    pendingCheckpointSync = Object.create(null);
+    var profileIds = Object.keys(queued);
+    if (!profileIds.length) return;
+    checkpointSyncActive = true;
+    var startedAt = runtimeNow();
+    var chain = Promise.resolve();
+    profileIds.forEach(function(id){
+      chain = chain.then(function(){
+        return syncLatestCheckpointForProfile(queued[id], {alreadyNormalized:true});
+      });
+    });
+    chain.then(function(){
+      checkpointSyncActive = false;
+      recordRuntimeTiming("checkpointBackgroundSync", startedAt, {
+        status: "flushed",
+        profileCount: profileIds.length
+      }, 80);
+      if (Object.keys(pendingCheckpointSync).length) scheduleCheckpointSyncFlush();
+    }).catch(function(error){
+      checkpointSyncActive = false;
+      recordRuntimeTiming("checkpointBackgroundSync", startedAt, {
+        status: "error",
+        profileCount: profileIds.length,
+        error: String(error && error.message || error)
+      }, 0);
+      if (Object.keys(pendingCheckpointSync).length) scheduleCheckpointSyncFlush();
     });
   }
 
@@ -6579,7 +7841,68 @@
   }
 
   async function appendSessionLog(profileId, entry){
-    if (!profileId || !entry) return;
+    return appendSessionLogs(profileId, [entry]);
+  }
+
+  function queueSessionLogPersist(profileId, entry){
+    var id = trimText(profileId);
+    if (!id || !entry) return;
+    pendingSessionLogPersist[id] = mergeSessionLogs(pendingSessionLogPersist[id], [entry]);
+    scheduleSessionLogPersistFlush();
+  }
+
+  function scheduleSessionLogPersistFlush(){
+    if (sessionLogPersistTimer || sessionLogPersistActive) return;
+    var run = function(){
+      sessionLogPersistTimer = 0;
+      flushQueuedSessionLogs();
+    };
+    try {
+      if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+        sessionLogPersistTimer = window.requestIdleCallback(run, {timeout: SESSION_LOG_PERSIST_DEBOUNCE_MS});
+        return;
+      }
+    } catch (_) {}
+    sessionLogPersistTimer = setTimeout(run, SESSION_LOG_PERSIST_DEBOUNCE_MS);
+  }
+
+  function flushQueuedSessionLogs(){
+    if (sessionLogPersistActive) return;
+    var queued = pendingSessionLogPersist;
+    pendingSessionLogPersist = Object.create(null);
+    var profileIds = Object.keys(queued);
+    if (!profileIds.length) return;
+    sessionLogPersistActive = true;
+    var startedAt = runtimeNow();
+    var totalEntries = profileIds.reduce(function(total, id){
+      return total + ensureArray(queued[id]).length;
+    }, 0);
+    var chain = Promise.resolve();
+    profileIds.forEach(function(id){
+      chain = chain.then(function(){ return appendSessionLogs(id, queued[id]); });
+    });
+    chain.then(function(){
+      sessionLogPersistActive = false;
+      recordRuntimeTiming("sessionLogBackgroundPersist", startedAt, {
+        status: "flushed",
+        profileCount: profileIds.length,
+        entryCount: totalEntries
+      }, 80);
+      if (Object.keys(pendingSessionLogPersist).length) scheduleSessionLogPersistFlush();
+    }).catch(function(error){
+      sessionLogPersistActive = false;
+      recordRuntimeTiming("sessionLogBackgroundPersist", startedAt, {
+        status: "error",
+        profileCount: profileIds.length,
+        entryCount: totalEntries,
+        error: String(error && error.message || error)
+      }, 0);
+      if (Object.keys(pendingSessionLogPersist).length) scheduleSessionLogPersistFlush();
+    });
+  }
+
+  async function appendSessionLogs(profileId, entries){
+    if (!profileId || !ensureArray(entries).length) return;
     var db = await openDb();
     return new Promise(function(resolve){
       var tx = db.transaction("session_logs", "readwrite");
@@ -6587,7 +7910,7 @@
       var request = store.get(profileId);
       request.onsuccess = function(){
         var current = request.result || {profileId: profileId, logs: []};
-        current.logs = mergeSessionLogs(current.logs, [entry]);
+        current.logs = mergeSessionLogs(current.logs, entries);
         store.put(current);
       };
       request.onerror = function(){ resolve(); };
@@ -6651,6 +7974,7 @@
     }
 
     function normalizeForStore(store, value){
+      if (typeof window !== "undefined" && window.__aSiteV2InternalIdbNormalizeBypass === true) return value;
       if (store && store.name === "profiles" && isObject(value)) return normalizePlayer(value);
       if (store && store.name === "checkpoints" && isObject(value)) return normalizeCheckpoint(value);
       return value;
@@ -6668,7 +7992,8 @@
     };
     IDBObjectStore.prototype.get = function(){
       var request = originalGet.apply(this, arguments);
-      if (this.name === "profiles" || this.name === "checkpoints") {
+      var bypassNormalize = typeof window !== "undefined" && window.__aSiteV2InternalIdbNormalizeBypass === true;
+      if (!bypassNormalize && (this.name === "profiles" || this.name === "checkpoints")) {
         var storeName = this.name;
         request.addEventListener("success", function(){
           if (isObject(request.result)) Object.assign(request.result, storeName === "profiles" ? normalizePlayer(request.result) : normalizeCheckpoint(request.result));
@@ -6678,7 +8003,8 @@
     };
     IDBObjectStore.prototype.getAll = function(){
       var request = originalGetAll.apply(this, arguments);
-      if (this.name === "profiles" || this.name === "checkpoints") {
+      var bypassNormalize = typeof window !== "undefined" && window.__aSiteV2InternalIdbNormalizeBypass === true;
+      if (!bypassNormalize && (this.name === "profiles" || this.name === "checkpoints")) {
         var storeName = this.name;
         request.addEventListener("success", function(){
           if (Array.isArray(request.result)) request.result.forEach(function(item, index){
@@ -6767,6 +8093,7 @@
       var selectedZeroDays = false;
       var agentName = "UNKNOWN";
       var originalAgentName = "UNKNOWN";
+      var patchedHasPostAcceptMarker = false;
       try {
         var body = init && typeof init.body === "string" ? init.body : "";
         if (body) {
@@ -6785,15 +8112,16 @@
               agentName = originalAgentName;
               selectedZeroDays = /步长为 0|0 天|跨越了 0 天|间隔时间.*0/.test(originalRequestText);
             }
-            var profile = await getActiveProfile().catch(function(){ return null; });
+            var profile = await getActiveProfile({skipBridgeNormalize:true}).catch(function(){ return null; });
             if (Array.isArray(payload.messages) && isCharacterGenerationAgent(originalAgentName)) {
               var characterBlock = buildCharacterGenerationHardDirectiveBlock(originalRequestText || requestText);
               var characterMessages = sanitizePayloadMessages(payload.messages, null);
               characterMessages = upsertASiteSystemMessage(characterMessages, characterBlock, "prepend-system");
               payload.messages = characterMessages;
-              patchedRequestText = messagesToPromptText(characterMessages);
-              latestPatchedPrompt = patchedRequestText;
-              requestText = patchedRequestText;
+              rememberLatestPatchedPrompt(characterMessages);
+              var characterPatchedLength = messagesPromptTextLength(characterMessages);
+              var characterPromptMarkers = summarizePromptMarkersFromMessages(characterMessages);
+              patchedHasPostAcceptMarker = characterPromptMarkers.hasPostAcceptMarker === true;
               agentName = originalAgentName;
               pushFetchPatchAudit(Object.assign({
                 originalAgentName: originalAgentName,
@@ -6803,14 +8131,14 @@
                 profileId: "",
                 eventId: "",
                 messageCount: characterMessages.length,
-                patchedLength: patchedRequestText.length,
+                patchedLength: characterPatchedLength,
                 granularity: "",
                 detailLevel: "",
                 sceneId: "",
                 activeNpcCount: 0,
                 loreEntriesCount: 0,
                 npcProfilesCount: 0
-              }, summarizePromptMarkers(patchedRequestText)));
+              }, characterPromptMarkers));
               nextInit = Object.assign({}, init, { body: JSON.stringify(payload) });
             } else if (profile && Array.isArray(payload.messages)) {
               if (profile.isAlive === false && originalAgentName !== "UNKNOWN") {
@@ -6825,8 +8153,12 @@
               var controlForAudit = normalizeSceneControl(profile.sceneControl, profile.immersionSettings, profile.sceneState);
               var sceneForAudit = normalizeSceneState(profile.sceneState);
               var profileIdForAudit = trimText(profile.id || profile.profileId);
+              var isTaskAgent = isTaskGenerationAgent(originalAgentName);
+              var contextTier = isTaskAgent ? "task-compact" : (isNarrativeGenerationAgent(originalAgentName) ? "narrative-compact" : (isMainAgent ? "main-full" : "general"));
               var block = isMainAgent
-                ? buildMainGenerationContextBlock(profile, originalAgentName, contextEvent)
+                ? (isTaskAgent
+                  ? buildMainTaskGenerationContextBlock(profile, originalAgentName, contextEvent)
+                  : buildMainGenerationContextBlock(profile, originalAgentName, contextEvent))
                 : buildContextBlock(profile, contextEvent);
               var messages = sanitizePayloadMessages(payload.messages, profile);
               messages = upsertASiteSystemMessage(messages, block, isMainAgent ? "prepend-system" : "replace-existing");
@@ -6840,20 +8172,22 @@
                 ));
               }
               payload.messages = messages;
-              patchedRequestText = messagesToPromptText(messages);
-              latestPatchedPrompt = patchedRequestText;
-              requestText = patchedRequestText;
+              rememberLatestPatchedPrompt(messages);
+              var patchedLength = messagesPromptTextLength(messages);
+              var promptMarkers = summarizePromptMarkersFromMessages(messages);
+              patchedHasPostAcceptMarker = promptMarkers.hasPostAcceptMarker === true;
               agentName = originalAgentName;
-              selectedZeroDays = /步长为 0|0 天|跨越了 0 天|间隔时间.*0/.test(patchedRequestText || originalRequestText);
+              selectedZeroDays = selectedZeroDays || messagesTextMatches(messages, /步长为 0|0 天|跨越了 0 天|间隔时间.*0/);
               pushFetchPatchAudit(Object.assign({
                 originalAgentName: originalAgentName,
-                agentNameFinal: originalAgentName,
-                patched: true,
-                mode: isMainAgent ? "main-generation" : "general",
-                profileId: profileIdForAudit,
+                 agentNameFinal: originalAgentName,
+                 patched: true,
+                 mode: isMainAgent ? "main-generation" : "general",
+                 contextTier: contextTier,
+                 profileId: profileIdForAudit,
                 eventId: trimText(profile.currentEventId || profile.currentYearEventId || sceneForAudit.currentSceneId),
                 messageCount: messages.length,
-                patchedLength: patchedRequestText.length,
+                patchedLength: patchedLength,
                 granularity: controlForAudit.granularityPreset,
                 detailLevel: controlForAudit.detailLevel,
                 sceneId: sceneForAudit.currentSceneId || sceneForAudit.sceneId || "",
@@ -6862,7 +8196,7 @@
                 npcProfilesCount: isObject(profile.npcProfiles)
                   ? Object.keys(profile.npcProfiles).length
                   : ensureArray(profile.npcProfiles).length
-              }, summarizePromptMarkers(patchedRequestText)));
+              }, promptMarkers));
               nextInit = Object.assign({}, init, { body: JSON.stringify(payload) });
             } else {
               pushFetchPatchAudit({
@@ -6883,7 +8217,7 @@
           error: String(error && error.message || error)
         });
       }
-      if ((originalAgentName === "STORYTELLER_DATA" || originalAgentName === "ARCHIVIST") && String(patchedRequestText || originalRequestText || requestText).indexOf(POST_ACCEPT_MARKER) < 0) {
+      if ((originalAgentName === "STORYTELLER_DATA" || originalAgentName === "ARCHIVIST") && !patchedHasPostAcceptMarker && String(patchedRequestText || originalRequestText || requestText).indexOf(POST_ACCEPT_MARKER) < 0) {
         console.warn("[A-Site V2] blocked pre-accept extraction:", originalAgentName);
         pushFetchPatchAudit({
           originalAgentName: originalAgentName,
@@ -6913,7 +8247,8 @@
               retryPayload.messages,
               buildLensRetryMessage(retryViolation, controlForAudit && controlForAudit.granularityPreset, originalAgentName)
             );
-            var retryPromptText = messagesToPromptText(retryPayload.messages);
+            var retryPromptLength = messagesPromptTextLength(retryPayload.messages);
+            var retryPromptMarkers = summarizePromptMarkersFromMessages(retryPayload.messages);
             pushFetchPatchAudit(Object.assign({
               originalAgentName: originalAgentName,
               agentNameFinal: originalAgentName,
@@ -6922,13 +8257,13 @@
               profileId: profileIdForAudit || "",
               eventId: trimText(profile && (profile.currentEventId || profile.currentYearEventId) || sceneForAudit && sceneForAudit.currentSceneId),
               messageCount: ensureArray(retryPayload.messages).length,
-              patchedLength: retryPromptText.length,
+              patchedLength: retryPromptLength,
               granularity: controlForAudit && controlForAudit.granularityPreset || "",
               detailLevel: controlForAudit && controlForAudit.detailLevel || "",
               sceneId: sceneForAudit && (sceneForAudit.currentSceneId || sceneForAudit.sceneId) || "",
               lensRetry: true,
               lensRetryReason: retryViolation.reason
-            }, summarizePromptMarkers(retryPromptText)));
+            }, retryPromptMarkers));
             console.warn("[A-Site V2] lens contract retry:", originalAgentName, controlForAudit && controlForAudit.granularityPreset, retryViolation.reason);
             var retryResponse = await originalFetch(input, Object.assign({}, nextInit, {body: JSON.stringify(retryPayload)}));
             return await sanitizeStorytellerResponse(retryResponse, originalAgentName);
@@ -7061,8 +8396,40 @@
     };
   }
 
+  function buildRootMirrorSummary(player, mode){
+    var normalized = isObject(player) ? player : {};
+    var latestHistory = latestAcceptedHistoryEntry(normalized);
+    var latestCanon = ensureArray(normalized.canonHistory).slice(-1)[0];
+    var latestDraft = ensureArray(normalized.draftHistory).slice(-1)[0];
+    var latestDiff = ensureArray(normalized.stateDiffHistory).slice(-1)[0];
+    return {
+      mode: trimText(mode) || "full",
+      fullDataLocation: "player",
+      rootHistoryMirrorsOmitted: true,
+      omittedRootFields: [
+        "draftHistory",
+        "canonHistory",
+        "stateDiffHistory"
+      ],
+      counts: {
+        history: ensureArray(normalized.history).length,
+        draftHistory: ensureArray(normalized.draftHistory).length,
+        canonHistory: ensureArray(normalized.canonHistory).length,
+        stateDiffHistory: ensureArray(normalized.stateDiffHistory).length,
+        pendingAcceptedEvents: ensureArray(normalized.pendingAcceptedEvents).length,
+        pendingStateDiffs: ensureArray(normalized.pendingStateDiffs).length
+      },
+      latestIds: {
+        history: trimText(latestHistory && latestHistory.id),
+        draftHistory: trimText(latestDraft && latestDraft.id),
+        canonHistory: trimText(latestCanon && latestCanon.id),
+        stateDiffHistory: trimText(latestDiff && latestDiff.id)
+      }
+    };
+  }
+
   function buildLitePlayerForExport(player){
-    var normalized = normalizePlayer(player);
+    var normalized = compactConsumedPromptFieldsForProfile(clearArchivedConsumedCustomTheme(normalizePlayer(player), "lite_export_archived_custom_theme"));
     var lite = pickFields(normalized, [
       "id","profileId","name","gender","age","currentYear","totalDays","birthYearNum",
       "birthYear","birthDayOffset","calendarName","era","eraName","background","appearance","identity",
@@ -7092,32 +8459,33 @@
   }
 
   function buildFullExportPayload(parsed, normalizedPlayer, mergedLogs){
+    var exportPlayer = compactConsumedPromptFieldsForProfile(clearArchivedConsumedCustomTheme(normalizedPlayer, "full_export_archived_custom_theme"));
+    var compactedLogs = compactLogsForExport(mergedLogs);
     return {
       schemaVersion: SCHEMA_VERSION,
       appVersion: APP_PATCH_VERSION,
       version: parsed.version || "1.23",
-      player: normalizedPlayer,
-      logs: mergedLogs,
+      player: exportPlayer,
+      logs: compactedLogs,
       isPruned: parsed.isPruned === true,
       exportedAt: new Date().toISOString(),
-      stateDiffHistory: normalizedPlayer.stateDiffHistory,
-      pendingStateDiffs: normalizedPlayer.pendingStateDiffs,
-      pendingAcceptedEvents: normalizedPlayer.pendingAcceptedEvents,
-      timeAdjustmentHistory: normalizedPlayer.timeAdjustmentHistory,
-      draftHistory: normalizedPlayer.draftHistory,
-      canonHistory: normalizedPlayer.canonHistory,
-      draftExclusions: normalizedPlayer.draftExclusions,
-      patchHistory: normalizedPlayer.patchHistory,
-      rollbackHistory: normalizedPlayer.rollbackHistory,
-      immersionSettings: normalizedPlayer.immersionSettings,
-      sceneControl: normalizedPlayer.sceneControl,
-      sceneState: normalizedPlayer.sceneState,
-      shortTermSceneMemory: normalizedPlayer.shortTermSceneMemory,
-      sceneMemoryArchive: normalizedPlayer.sceneMemoryArchive,
-      loreEntries: normalizedPlayer.loreEntries,
-      npcProfiles: normalizedPlayer.npcProfiles,
-      retrievalLog: normalizedPlayer.retrievalLog,
-      nextGranularitySuggestions: normalizedPlayer.nextGranularitySuggestions,
+      pendingStateDiffs: exportPlayer.pendingStateDiffs,
+      pendingAcceptedEvents: exportPlayer.pendingAcceptedEvents,
+      timeAdjustmentHistory: exportPlayer.timeAdjustmentHistory,
+      draftExclusions: exportPlayer.draftExclusions,
+      patchHistory: exportPlayer.patchHistory,
+      rollbackHistory: exportPlayer.rollbackHistory,
+      immersionSettings: exportPlayer.immersionSettings,
+      sceneControl: exportPlayer.sceneControl,
+      sceneState: exportPlayer.sceneState,
+      shortTermSceneMemory: exportPlayer.shortTermSceneMemory,
+      sceneMemoryArchive: exportPlayer.sceneMemoryArchive,
+      loreEntries: exportPlayer.loreEntries,
+      npcProfiles: exportPlayer.npcProfiles,
+      retrievalLog: exportPlayer.retrievalLog,
+      nextGranularitySuggestions: exportPlayer.nextGranularitySuggestions,
+      v2RootMirrorSummary: buildRootMirrorSummary(exportPlayer, "full_export_root_history_mirrors_omitted"),
+      v2LogExportSummary: buildLogExportSummary(mergedLogs, compactedLogs),
       exportMode: "native_button_upgraded_to_v2"
     };
   }
@@ -7133,7 +8501,6 @@
       // Keep lite importable through the native path without triggering the legacy pruned-save history trimming.
       isPruned: false,
       exportedAt: new Date().toISOString(),
-      canonHistory: litePlayer.canonHistory,
       immersionSettings: litePlayer.immersionSettings,
       sceneControl: litePlayer.sceneControl,
       sceneState: litePlayer.sceneState,
@@ -7143,6 +8510,8 @@
       npcProfiles: litePlayer.npcProfiles,
       nextGranularitySuggestions: litePlayer.sceneControl && litePlayer.sceneControl.suggestedNextGranularities || [],
       v2LiteAuditSummary: litePlayer.v2LiteAuditSummary,
+      v2RootMirrorSummary: buildRootMirrorSummary(litePlayer, "lite_export_root_history_mirrors_omitted"),
+      v2LogExportSummary: buildLogExportSummary([], []),
       exportMode: "native_button_lite_v2_allowlist"
     };
   }
@@ -7196,9 +8565,9 @@
     return false;
   }
 
-  function rememberCommittedWriteGuard(profile, reason){
+  function rememberCommittedWriteGuard(profile, reason, options){
     if (!isObject(profile)) return;
-    var normalized = normalizePlayer(profile);
+    var normalized = options && options.alreadyNormalized === true ? profile : normalizePlayer(profile);
     recentCommittedWriteGuard = {
       profileId: trimText(normalized.id || normalized.profileId),
       profileName: trimText(normalized.name || normalized.characterName || normalized.playerName),
@@ -7208,7 +8577,8 @@
       canonHistoryLength: ensureArray(normalized.canonHistory).length,
       stateDiffHistoryLength: ensureArray(normalized.stateDiffHistory).length,
       patchHistoryLength: ensureArray(normalized.patchHistory).length,
-      profileSnapshot: clonePlain(normalized),
+      profileSnapshot: normalized,
+      profileSnapshotMode: "lazy_clone_on_stale_write",
       reason: reason || "committed accepted story event",
       createdAt: Date.now(),
       expiresAt: Date.now() + 5 * 60 * 1000
@@ -7224,7 +8594,7 @@
     if (guard.profileId && profileId && guard.profileId !== profileId) return null;
     if (!profileId && guard.profileName && profileName && guard.profileName !== profileName) return null;
     if (!isObject(guard.profileSnapshot)) return null;
-    return normalizePlayer(guard.profileSnapshot);
+    return clonePlain(guard.profileSnapshot);
   }
 
   function profileHasActiveSettlementWork(profile){
@@ -7266,9 +8636,9 @@
             var parsedPlayer = normalizePlayer(parsed.player);
             var guardProfile = getCommittedWriteGuardSnapshot(parsedPlayer);
             var cachedProfile = guardProfile || (latestSavedProfileCache && profileIdentityMatches(latestSavedProfileCache, parsedPlayer) && profileLooksNewerForExport(latestSavedProfileCache, parsedPlayer) ? latestSavedProfileCache : null);
-            var normalizedPlayer = normalizePlayer(cachedProfile || parsedPlayer);
+            var normalizedPlayer = cachedProfile || parsedPlayer;
             if (guardProfile) {
-              latestSavedProfileCache = normalizePlayer(guardProfile);
+              rememberLatestSavedProfileCache(guardProfile, false);
               console.warn("[A-Site V2] native export replaced stale player payload with committed guard snapshot:", {
                 incomingEventCount: Number(parsedPlayer.eventCount || 0) || 0,
                 guardEventCount: Number(guardProfile.eventCount || 0) || 0,
@@ -7325,9 +8695,9 @@
           var normalized = normalizePlayer(importedPlayer);
           if (!profileDeclaresTerminal(normalized)) return;
           window.setTimeout(function(){
-            saveProfile(normalized).then(function(saved){
+            saveProfile(normalized, {alreadyNormalized:true}).then(function(saved){
               if (!saved || saved.__asv2AbortSave) return;
-              latestSavedProfileCache = normalizePlayer(saved);
+              rememberLatestSavedProfileCache(saved, true);
               return syncReactBridgeProfileAndVerify(saved, {clearCurrentEvent:true, phase:"GAME_OVER"}).then(function(){
                 return renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] terminal import inline render failed:", error); });
               });
@@ -7345,6 +8715,36 @@
 
   function buildPromptPreview(profile){
     return buildContextBlock(profile || {}, {requestText: latestPatchedPrompt}) + "\n\n【最近注入到 API 的完整消息预览】\n" + (latestPatchedPrompt || "尚未捕获 API 请求。");
+  }
+
+  function renderLazyPromptPreview(){
+    return '<section><h3>Prompt 预览</h3><textarea id="asv2-preview" readonly data-asv2-lazy-prompt-preview="1">展开本段后生成 Prompt 预览。</textarea></section>';
+  }
+
+  function hydrateLazyPromptPreview(panel, profile){
+    var preview = panel && panel.querySelector ? panel.querySelector("#asv2-preview[data-asv2-lazy-prompt-preview]") : null;
+    if (!preview || preview.getAttribute("data-asv2-lazy-ready") === "1") return;
+    preview.setAttribute("data-asv2-lazy-ready", "1");
+    preview.value = "正在生成 Prompt 预览...";
+    window.setTimeout(function(){
+      try {
+        preview.value = buildPromptPreview(profile || {});
+      } catch (error) {
+        preview.value = "Prompt 预览生成失败：" + (error && error.message || error);
+      }
+    }, 0);
+  }
+
+  function attachLazyPromptPreview(panel, profile){
+    var preview = panel && panel.querySelector ? panel.querySelector("#asv2-preview[data-asv2-lazy-prompt-preview]") : null;
+    if (!preview) return;
+    var details = preview.closest ? preview.closest("details") : null;
+    if (!details) return;
+    var renderIfOpen = function(){
+      if (details.open) hydrateLazyPromptPreview(panel, profile);
+    };
+    details.addEventListener("toggle", renderIfOpen);
+    renderIfOpen();
   }
 
   function downloadText(filename, text){
@@ -7533,9 +8933,11 @@
     });
   }
 
-  function pendingDiffsForProfile(profile, includeStored){
+  function pendingDiffsForProfile(profile, includeStored, storedDiffsOverride){
     var normalized = isObject(profile) ? profile : {};
+    var storedDiffs = includeStored === false ? [] : (Array.isArray(storedDiffsOverride) ? storedDiffsOverride : readPendingDiffs());
     var ownedIds = {};
+    var awaitingStateEventIds = {};
     []
       .concat(normalized.draftHistory || [])
       .concat(normalized.canonHistory || [])
@@ -7547,22 +8949,38 @@
         var id = trimText(event.id || event.sourceEventId);
         if (id) ownedIds[id] = true;
       });
-    return mergeStateDiffs(includeStored === false ? [] : readPendingDiffs(), normalized.pendingStateDiffs).filter(function(diff){
+    ensureArray(normalized.pendingAcceptedEvents).forEach(function(event){
+      if (!isObject(event)) return;
+      if (isClosedStoryEventForDiff(event)) return;
+      if (trimText(event.status) !== "accepted_text_pending_state") return;
+      var eventId = trimText(event.id);
+      var eventSourceId = trimText(event.sourceEventId);
+      if (eventId) awaitingStateEventIds[eventId] = true;
+      if (eventSourceId) awaitingStateEventIds[eventSourceId] = true;
+    });
+    return mergeStateDiffs(storedDiffs, normalized.pendingStateDiffs).filter(function(diff){
       if (!diff || diff.status !== "pending") return false;
       var sourceEventId = trimText(diff.sourceEventId);
       if (!sourceEventId || !ownedIds[sourceEventId]) return false;
-      return canAcceptLateExtractionDiffSync(normalized, sourceEventId);
+      return !!awaitingStateEventIds[sourceEventId];
     });
   }
 
   async function getProfileForStoryEvent(sourceEventId){
     var id = trimText(sourceEventId);
     if (!id) return getActiveProfile();
-    var bridgeProfile = getReactBridgeProfile();
+    var bridgeProfile = getReactBridgeProfile({skipNormalize:true});
     if (bridgeProfile && profileOwnsEventId(bridgeProfile, id)) return bridgeProfile;
-    var profiles = await getAllProfiles().catch(function(){ return []; });
     var pending = readPendingTextEvents().find(function(event){ return isObject(event) && event.id === id; });
     var pendingProfileId = trimText(pending && (pending.profileId || pending.playerId));
+    var cachedProfile = getLatestSavedProfileCacheForProfile(null);
+    if (cachedProfile && !isLikelyDefaultBlankProfile(cachedProfile)) {
+      var cachedProfileId = trimText(cachedProfile.id || cachedProfile.profileId);
+      if (profileOwnsEventId(cachedProfile, id) || (pendingProfileId && cachedProfileId && cachedProfileId === pendingProfileId)) {
+        return cachedProfile;
+      }
+    }
+    var profiles = await getAllProfiles().catch(function(){ return []; });
     if (pendingProfileId) {
       var byPendingId = profiles.find(function(profile){ return trimText(profile.id || profile.profileId) === pendingProfileId; });
       if (byPendingId) return byPendingId;
@@ -8315,8 +9733,9 @@
     return normalizeStateDiff(combined);
   }
 
-  function applyAcceptedEventSettlement(player, sourceEventId){
-    var next = normalizePlayer(player || {});
+  function applyAcceptedEventSettlement(player, sourceEventId, options){
+    var opts = options || {};
+    var next = opts.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
     var event = findEventById(next, sourceEventId);
     if (!event || event.status !== "accepted_text_pending_state" || !isReviewableStoryEvent(event)) {
       showToast("未找到可结算的 accepted_text_pending_state 事件。", "warn");
@@ -8353,11 +9772,12 @@
         next.pendingStateDiffs = [legacyFallbackDiff];
         next = applyConfirmedStateDiff(next, legacyFallbackDiff);
         storedDiffs = storedDiffs.filter(function(diff){ return !diff || diff.sourceEventId !== event.id; }).concat([Object.assign({}, legacyFallbackDiff, {status:"accepted", reviewedAt:new Date().toISOString()})]);
-        writePendingDiffs(storedDiffs.filter(function(diff){ return diff && diff.status !== "accepted"; }));
-        removePendingDiffsByEventId(event.id);
-        next = clearProfilePendingEventQueues(next, event.id);
-        next.pendingStateDiffs = pendingDiffsForProfile(next);
-        return normalizePlayer(next);
+        var storedPendingAfterLegacyRemove = storedDiffs.filter(function(diff){ return diff && diff.status !== "accepted"; });
+        writePendingDiffs(storedPendingAfterLegacyRemove);
+        storedPendingAfterLegacyRemove = latestPendingStateDiffs;
+        next = clearProfilePendingEventQueues(next, event.id, null, {alreadyCloned:true, skipStoredPendingDiffCleanup:true});
+        next.pendingStateDiffs = pendingDiffsForProfile(next, true, storedPendingAfterLegacyRemove);
+        return next;
       }
       var textOnlyFallbackDiff = buildTextAcceptanceOnlyDiff(event, "accepted_event_no_state_diff_fallback");
       textOnlyFallbackDiff.status = "pending";
@@ -8372,15 +9792,18 @@
           notes: appendNoteText(normalizedFallbackTextOnly.notes, "主流程自动写入保底 finalize；未找到模型或 legacy 状态 patch。")
         })]);
       }
-      removePendingDiffsByEventId(event.id);
-      next = clearProfilePendingEventQueues(next, event.id);
-      next.pendingStateDiffs = pendingDiffsForProfile(next);
-      return normalizePlayer(next);
+      var storedPendingAfterTextRemove = removePendingDiffsByEventId(event.id);
+      next = clearProfilePendingEventQueues(next, event.id, null, {alreadyCloned:true, skipStoredPendingDiffCleanup:true});
+      next.pendingStateDiffs = pendingDiffsForProfile(next, true, storedPendingAfterTextRemove);
+      return next;
     }
     var combinedEventDiff = mergeEventDiffsForConfirmation(eventDiffs, event);
+    var confirmedDiffApplied = false;
+    var mergedStoredDiffsPendingWrite = false;
     if (combinedEventDiff) {
       next.pendingStateDiffs = [combinedEventDiff];
       next = applyConfirmedStateDiff(next, combinedEventDiff);
+      confirmedDiffApplied = true;
       storedDiffs = storedDiffs.map(function(item){
         if (!item || item.sourceEventId !== event.id || item.status !== "pending") return item;
         return Object.assign({}, item, {
@@ -8389,9 +9812,11 @@
           mergedIntoStateDiffId: combinedEventDiff.id
         });
       });
-      writePendingDiffs(storedDiffs);
+      mergedStoredDiffsPendingWrite = true;
     }
     if (!storyEventIsAcceptedInProfile(next, event.id, event)) {
+      if (mergedStoredDiffsPendingWrite) writePendingDiffs(storedDiffs);
+      confirmedDiffApplied = false;
       var fallbackDiff = normalizeStateDiff(buildTextAcceptanceOnlyDiff(event, "accepted_event_settlement_fallback"));
       next = finalizeAcceptedEvent(next, fallbackDiff);
       next.stateDiffHistory = ensureArray(next.stateDiffHistory).concat([Object.assign({}, fallbackDiff, {
@@ -8400,14 +9825,22 @@
         notes: appendNoteText(fallbackDiff.notes, "主流程自动写入保底 finalize；状态 diff 未能写入正文正史。")
       })]);
     }
-    removePendingDiffsByEventId(event.id);
-    next = clearProfilePendingEventQueues(next, event.id);
-    next.pendingStateDiffs = pendingDiffsForProfile(next);
-    return normalizePlayer(next);
+    var storedPendingAfterSettlementRemove = null;
+    if (confirmedDiffApplied && mergedStoredDiffsPendingWrite) {
+      storedPendingAfterSettlementRemove = storedDiffs.filter(function(diff){ return !diff || diff.sourceEventId !== event.id; });
+      writePendingDiffs(storedPendingAfterSettlementRemove);
+      storedPendingAfterSettlementRemove = latestPendingStateDiffs;
+    } else {
+      storedPendingAfterSettlementRemove = removePendingDiffsByEventId(event.id);
+    }
+    next = clearProfilePendingEventQueues(next, event.id, null, {alreadyCloned:true, skipStoredPendingDiffCleanup:true});
+    next.pendingStateDiffs = pendingDiffsForProfile(next, true, storedPendingAfterSettlementRemove);
+    return confirmedDiffApplied ? next : normalizePlayer(next);
   }
 
-  function renderInlineImmersionControls(profile){
-    var normalized = profile ? normalizePlayer(profile) : null;
+  function renderInlineImmersionControls(profile, options){
+    var opts = options || {};
+    var normalized = profile ? (opts.alreadyNormalized === true ? profile : normalizePlayer(profile)) : null;
     var control = normalized ? normalizeSceneControl(normalized.sceneControl, normalized.immersionSettings, normalized.sceneState) : normalizeSceneControl({});
     var scene = normalized ? normalizeSceneState(normalized.sceneState) : normalizeSceneState({});
     var dateText = normalized ? (normalized.currentYear || normalized.calendarState.currentDate) : "未读取";
@@ -8560,6 +9993,28 @@
     return !!(element && (element.closest("#a-site-v2-panel") || element.closest("#a-site-v2-inline-control")));
   }
 
+  function isASiteV2OwnedElement(node){
+    if (!node || node.nodeType !== 1) return false;
+    if (/^a-site-v2/.test(trimText(node.id))) return true;
+    if (node.classList && Array.prototype.slice.call(node.classList).some(function(name){ return /^asv2-/.test(name); })) return true;
+    return !!(node.closest && node.closest("#a-site-v2-panel,#a-site-v2-inline-control,#a-site-v2-button,#a-site-v2-toast,#a-site-v2-preaccept-blocked,.asv2-character-generation-directive,[class^='asv2-'],[class*=' asv2-']"));
+  }
+
+  function isASiteV2OwnedMutation(mutation){
+    if (!mutation) return false;
+    if (isASiteV2OwnedElement(mutation.target)) return true;
+    var nodes = Array.prototype.slice.call(mutation.addedNodes || []).concat(Array.prototype.slice.call(mutation.removedNodes || []));
+    if (!nodes.length) return false;
+    return nodes.every(function(node){
+      return node.nodeType !== 1 || isASiteV2OwnedElement(node);
+    });
+  }
+
+  function mutationsAreOnlyASiteV2Owned(mutations){
+    var list = Array.prototype.slice.call(mutations || []);
+    return !!(list.length && list.every(isASiteV2OwnedMutation));
+  }
+
   function findButtonByText(texts){
     var labels = Array.isArray(texts) ? texts : [texts];
     var buttons = Array.prototype.slice.call(document.querySelectorAll("button"));
@@ -8666,23 +10121,57 @@
     var beforeTheme = trimText(beforeState && beforeState.theme);
     var beforeMode = trimText(beforeState && beforeState.mode);
     var beforePoints = Number(beforeState && beforeState.points);
-    for (var i = 0; i < 14; i += 1) {
-      var candidates = [];
-      var bridgeProfile = getReactBridgeProfile();
-      if (bridgeProfile) candidates.push(bridgeProfile);
-      var activeProfile = await getActiveProfile().catch(function(){ return null; });
-      if (activeProfile) candidates.push(activeProfile);
-      for (var j = 0; j < candidates.length; j += 1) {
-        var profile = normalizePlayer(candidates[j]);
-        var theme = trimText(profile.customNextTheme);
-        var mode = trimText(profile.customNextThemeMode || "soft");
-        var points = Number(profile.inspirationPoints);
-        var changed = theme && (theme !== beforeTheme || mode !== beforeMode || (Number.isFinite(beforePoints) && Number.isFinite(points) && points < beforePoints));
-        if (changed && (!expectedMode || mode === expectedMode || i > 5)) return profile;
+    var startedAt = runtimeNow();
+    var normalizedCandidateCount = 0;
+    var activeProfilePolls = 0;
+    try {
+      for (var i = 0; i < 14; i += 1) {
+        var candidates = [];
+        var bridgeProfile = getReactBridgeProfile({skipNormalize:true});
+        if (bridgeProfile && !isLikelyDefaultBlankProfile(bridgeProfile)) {
+          candidates.push({source:"react-bridge", profile:bridgeProfile, alreadyNormalized:false});
+        } else {
+          activeProfilePolls += 1;
+          var activeProfile = await getActiveProfile().catch(function(){ return null; });
+          if (activeProfile) candidates.push({source:"active-profile", profile:activeProfile, alreadyNormalized:true});
+        }
+        for (var j = 0; j < candidates.length; j += 1) {
+          var candidate = candidates[j];
+          var profile = candidate.alreadyNormalized ? candidate.profile : normalizePlayer(candidate.profile);
+          if (!candidate.alreadyNormalized) normalizedCandidateCount += 1;
+          var theme = trimText(profile.customNextTheme);
+          var mode = trimText(profile.customNextThemeMode || "soft");
+          var points = Number(profile.inspirationPoints);
+          var changed = theme && (theme !== beforeTheme || mode !== beforeMode || (Number.isFinite(beforePoints) && Number.isFinite(points) && points < beforePoints));
+          if (changed && (!expectedMode || mode === expectedMode || i > 5)) {
+            recordRuntimeTiming("waitForNativeFateProfile", startedAt, {
+              status: "changed",
+              attempt: i + 1,
+              source: candidate.source,
+              activeProfilePolls: activeProfilePolls,
+              normalizedCandidateCount: normalizedCandidateCount
+            }, 80);
+            return profile;
+          }
+        }
+        await delay(80);
       }
-      await delay(80);
+      recordRuntimeTiming("waitForNativeFateProfile", startedAt, {
+        status: "timeout",
+        attempts: 14,
+        activeProfilePolls: activeProfilePolls,
+        normalizedCandidateCount: normalizedCandidateCount
+      }, 80);
+      return null;
+    } catch (error) {
+      recordRuntimeTiming("waitForNativeFateProfile", startedAt, {
+        status: "error",
+        activeProfilePolls: activeProfilePolls,
+        normalizedCandidateCount: normalizedCandidateCount,
+        error: String(error && error.message || error)
+      }, 0);
+      throw error;
     }
-    return null;
   }
 
   async function bridgeNativeFateInterventionToV2(expectedMode, beforeState){
@@ -8704,7 +10193,7 @@
         });
         marked.customNextTheme = trimText(normalized.customNextTheme);
         marked.customNextThemeMode = trimText(normalized.customNextThemeMode || expectedMode || "soft");
-        var savedChain = await saveProfile(marked);
+        var savedChain = await saveProfile(marked, {alreadyNormalized:true});
         if (savedChain && !savedChain.__asv2AbortSave) {
           syncReactBridgeProfile(savedChain);
           await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] fate bridge chain render failed:", error); });
@@ -8721,11 +10210,16 @@
         customThemePreview: trimText(next.customNextTheme).slice(0, 80)
       });
       lastInlineTimeJumpContext = clonePlain(next.pendingInlineTimeJumpContext);
-      var saved = await saveProfile(next);
+      var saved = await saveProfile(next, {alreadyNormalized:true});
       if (!saved || saved.__asv2AbortSave) return;
       syncReactBridgeProfile(saved, {clearCurrentEvent:true});
       await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] fate bridge inline render failed:", error); });
-      startNativeEventFromV2TimeJump(0, saved, {clearCurrentEvent:true});
+      startNativeEventFromV2TimeJump(0, saved, {
+        clearCurrentEvent: true,
+        alreadyNormalized: true,
+        consumeCustomNextTheme: true,
+        consumeCustomNextThemeReason: "fate_intervention_started_generation"
+      });
       showToast("命运干涉已接入 V2 事件推进。");
     } catch (error) {
       console.warn("[A-Site V2] fate intervention V2 bridge failed:", error);
@@ -8749,6 +10243,40 @@
     window.setTimeout(function(){
       bridgeNativeFateInterventionToV2(mode, beforeState);
     }, 0);
+  }
+
+  function clearConsumedCustomThemeIfCurrentEventReferences(expectedTheme, reason){
+    var theme = trimText(expectedTheme);
+    if (!theme) return false;
+    var snapshot = getReactBridgeSnapshot();
+    var player = snapshot && isObject(snapshot.player) ? normalizePlayer(snapshot.player) : getReactBridgeProfile();
+    if (!player || trimText(player.customNextTheme) !== theme) return false;
+    var currentEvent = snapshot && snapshot.currentYearEvent;
+    if (!eventReferencesCustomTheme(currentEvent, theme)) return false;
+    persistConsumedCustomThemeAfterNativeStart(player, window.__ASiteV2ReactBridge, reason || "current_event_references_consumed_custom_theme");
+    return true;
+  }
+
+  function scheduleConsumedCustomThemeCleanupProbe(expectedTheme, reason){
+    var theme = trimText(expectedTheme);
+    if (!theme) return;
+    var attempts = 0;
+    var probe = function(){
+      attempts += 1;
+      if (clearConsumedCustomThemeIfCurrentEventReferences(theme, reason)) return;
+      if (attempts < 8) window.setTimeout(probe, attempts < 3 ? 120 : 300);
+    };
+    window.setTimeout(probe, 0);
+  }
+
+  function handleNativeConsumedCustomThemeCapture(event){
+    var button = event.target && event.target.closest && event.target.closest("button");
+    if (!button || isInsideASiteV2Ui(button)) return;
+    if (button.disabled || button.getAttribute("aria-disabled") === "true") return;
+    var profile = getReactBridgeProfile();
+    var theme = profile && trimText(profile.customNextTheme);
+    if (!theme) return;
+    scheduleConsumedCustomThemeCleanupProbe(theme, "native_current_event_consumed_custom_theme");
   }
 
   function installCharacterGenerationDirectiveField(){
@@ -8940,73 +10468,94 @@
   }
 
   async function renderInlineControlsNow(){
-    var profile = await getActiveProfile().catch(function(){ return null; });
-    if (profile) {
-      var bridgeStoryCleaned = sanitizeCurrentBridgeStoryChoicePollution();
-      var visibleNarrativePollution = documentHasVisibleInlineChoicePollution();
-      var storedNarrativePollution = narrativeCollectionsContainInlineChoicePollution(profile);
-      var normalizedProfile = purgeClosedSourcePendingDiffs(normalizePlayer(profile), "主控条渲染前清理已关闭事件 pending diff。");
-      var beforeRepairDate = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
-      ensureArray(normalizedProfile.draftHistory).slice().reverse().some(function(event){
-        if (!isClosedStoryEventForDiff(event)) return false;
-        var before = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
-        normalizedProfile = restoreInlineTimeJumpBeforeRejectedEvent(normalizedProfile, event, "主控条渲染前修复已取消事件遗留时间推进。");
-        return trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) !== before;
-      });
-      var needsProfileSync = trimText(profile.currentYear) !== trimText(normalizedProfile.currentYear) ||
-        trimText(profile.age) !== trimText(normalizedProfile.age) ||
-        trimText(profile.calendarState && profile.calendarState.currentDate) !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
-        ensureArray(profile.pendingStateDiffs).length !== ensureArray(normalizedProfile.pendingStateDiffs).length ||
-        trimText(profile.pendingInlineTimeJumpContext && profile.pendingInlineTimeJumpContext.newDate) !== trimText(normalizedProfile.pendingInlineTimeJumpContext && normalizedProfile.pendingInlineTimeJumpContext.newDate) ||
-        beforeRepairDate !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
-        storedNarrativePollution ||
-        visibleNarrativePollution ||
-        bridgeStoryCleaned;
-      profile = normalizedProfile;
-      if (needsProfileSync && !inlineProfileSyncInProgress) {
-        inlineProfileSyncInProgress = true;
-        try {
-          var savedNormalized = await saveProfile(normalizedProfile);
-          if (savedNormalized && !savedNormalized.__asv2AbortSave) {
-            profile = savedNormalized;
-            syncReactBridgeProfile(savedNormalized);
-          } else if (visibleNarrativePollution) {
-            syncReactBridgeProfile(normalizedProfile);
+    var startedAt = runtimeNow();
+    var timingDetail = {status:"ok", hasProfile:false, needsProfileSync:false, inserted:false, missingAnchor:false};
+    try {
+      var profile = await getActiveProfile().catch(function(){ return null; });
+      if (profile) {
+        timingDetail.hasProfile = true;
+        var bridgeStoryCleaned = sanitizeCurrentBridgeStoryChoicePollution();
+        var visibleNarrativePollution = documentHasVisibleInlineChoicePollution();
+        var storedNarrativePollution = narrativeCollectionsContainInlineChoicePollution(profile);
+        var normalizedProfile = purgeClosedSourcePendingDiffs(profile, "主控条渲染前清理已关闭事件 pending diff。");
+        var beforeRepairDate = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
+        ensureArray(normalizedProfile.draftHistory).slice().reverse().some(function(event){
+          if (!isClosedStoryEventForDiff(event)) return false;
+          var before = trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate);
+          normalizedProfile = restoreInlineTimeJumpBeforeRejectedEvent(normalizedProfile, event, "主控条渲染前修复已取消事件遗留时间推进。");
+          return trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) !== before;
+        });
+        var needsProfileSync = trimText(profile.currentYear) !== trimText(normalizedProfile.currentYear) ||
+          trimText(profile.age) !== trimText(normalizedProfile.age) ||
+          trimText(profile.calendarState && profile.calendarState.currentDate) !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
+          ensureArray(profile.pendingStateDiffs).length !== ensureArray(normalizedProfile.pendingStateDiffs).length ||
+          trimText(profile.pendingInlineTimeJumpContext && profile.pendingInlineTimeJumpContext.newDate) !== trimText(normalizedProfile.pendingInlineTimeJumpContext && normalizedProfile.pendingInlineTimeJumpContext.newDate) ||
+          beforeRepairDate !== trimText(normalizedProfile.calendarState && normalizedProfile.calendarState.currentDate) ||
+          storedNarrativePollution ||
+          visibleNarrativePollution ||
+          bridgeStoryCleaned;
+        timingDetail.needsProfileSync = !!needsProfileSync;
+        profile = normalizedProfile;
+        if (needsProfileSync && !inlineProfileSyncInProgress) {
+          inlineProfileSyncInProgress = true;
+          try {
+            var savedNormalized = await saveProfile(normalizedProfile, {alreadyNormalized:true});
+            if (savedNormalized && !savedNormalized.__asv2AbortSave) {
+              profile = savedNormalized;
+              syncReactBridgeProfile(savedNormalized);
+            } else if (visibleNarrativePollution) {
+              syncReactBridgeProfile(normalizedProfile);
+            }
+          } catch (syncError) {
+            console.warn("[A-Site V2] inline profile timeline sync failed:", syncError);
+            if (visibleNarrativePollution) syncReactBridgeProfile(normalizedProfile);
+          } finally {
+            inlineProfileSyncInProgress = false;
           }
-        } catch (syncError) {
-          console.warn("[A-Site V2] inline profile timeline sync failed:", syncError);
-          if (visibleNarrativePollution) syncReactBridgeProfile(normalizedProfile);
-        } finally {
-          inlineProfileSyncInProgress = false;
         }
+        syncVisibleProfileTimeText(profile);
       }
-      syncVisibleProfileTimeText(profile);
-    }
-    var ref = findInlineInsertionReference();
-    var existing = document.getElementById("a-site-v2-inline-control");
-    if (!ref || !ref.element || !ref.element.parentElement) {
-      if (existing) existing.remove();
-      syncFloatingDebugButtonVisibility(false);
-      syncLegacyFateTriggerVisibility(false);
-      if (!inlineMissingAnchorWarned) {
-        inlineMissingAnchorWarned = true;
-        console.warn("[A-Site V2] 主界面沉浸控制条未找到稳定挂载点，已跳过插入。");
+      var ref = findInlineInsertionReference();
+      var existing = document.getElementById("a-site-v2-inline-control");
+      if (!ref || !ref.element || !ref.element.parentElement) {
+        timingDetail.missingAnchor = true;
+        if (existing) existing.remove();
+        syncFloatingDebugButtonVisibility(false);
+        syncLegacyFateTriggerVisibility(false);
+        if (!inlineMissingAnchorWarned) {
+          inlineMissingAnchorWarned = true;
+          console.warn("[A-Site V2] 主界面沉浸控制条未找到稳定挂载点，已跳过插入。");
+        }
+        return timingDetail;
       }
-      return;
+      inlineMissingAnchorWarned = false;
+      var wrapper = document.createElement("div");
+      wrapper.innerHTML = renderInlineImmersionControls(profile, {alreadyNormalized:true});
+      var nextNode = wrapper.firstElementChild;
+      if (existing && nextNode && existing.outerHTML === nextNode.outerHTML) {
+        nextNode = existing;
+      } else if (existing) existing.replaceWith(nextNode);
+      else if (ref.position === "after") ref.element.parentElement.insertBefore(nextNode, ref.element.nextSibling);
+      else ref.element.parentElement.insertBefore(nextNode, ref.element);
+      timingDetail.inserted = !!nextNode;
+      syncFloatingDebugButtonVisibility(true);
+      syncLegacyFateTriggerVisibility(true);
+      var detail = document.getElementById("asv2-inline-detail-level");
+      if (detail && profile) detail.value = normalizeSceneControl(profile.sceneControl, profile.immersionSettings, profile.sceneState).detailLevel || "standard";
+      return timingDetail;
+    } catch (error) {
+      timingDetail.status = "error";
+      timingDetail.error = String(error && error.message || error);
+      throw error;
+    } finally {
+      recordRuntimeTiming("renderInlineControlsNow", startedAt, timingDetail, 80);
     }
-    inlineMissingAnchorWarned = false;
-    var wrapper = document.createElement("div");
-    wrapper.innerHTML = renderInlineImmersionControls(profile);
-    var nextNode = wrapper.firstElementChild;
-    if (existing && nextNode && existing.outerHTML === nextNode.outerHTML) {
-      nextNode = existing;
-    } else if (existing) existing.replaceWith(nextNode);
-    else if (ref.position === "after") ref.element.parentElement.insertBefore(nextNode, ref.element.nextSibling);
-    else ref.element.parentElement.insertBefore(nextNode, ref.element);
-    syncFloatingDebugButtonVisibility(true);
-    syncLegacyFateTriggerVisibility(true);
-    var detail = document.getElementById("asv2-inline-detail-level");
-    if (detail && profile) detail.value = normalizeSceneControl(profile.sceneControl, profile.immersionSettings, profile.sceneState).detailLevel || "standard";
+  }
+
+  function shouldScheduleInlineFollowupRender(result){
+    if (!result || result.status === "error") return true;
+    if (result.missingAnchor === true) return true;
+    return result.inserted !== true;
   }
 
   function scheduleInlineControlsRender(){
@@ -9026,8 +10575,10 @@
     var latest = normalizePlayer(profile);
     var mutated = await mutator(latest);
     if (mutated && mutated.__asv2AbortSave) return null;
-    var next = preserveInlineTimeJumpContext(normalizePlayer(mutated || latest), mutated || latest);
-    var saved = await saveProfile(next);
+    var mutationSource = mutated || latest;
+    var mutationAlreadyNormalized = mutationSource === latest || opts.resultAlreadyNormalized === true;
+    var next = preserveInlineTimeJumpContext(mutationAlreadyNormalized ? mutationSource : normalizePlayer(mutationSource), mutationSource);
+    var saved = await saveProfile(next, {alreadyNormalized:true});
     if (saved && saved.__asv2AbortSave) {
       scheduleInlineControlsRender();
       return null;
@@ -9038,11 +10589,14 @@
         phase: opts.phase || (saved.isAlive === false ? "GAME_OVER" : undefined)
       });
     }
-    await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] inline controls immediate render failed:", error); });
+    var inlineRenderResult = await renderInlineControlsNow().catch(function(error){
+      console.warn("[A-Site V2] inline controls immediate render failed:", error);
+      return null;
+    });
     if (message) showToast(message);
     if (opts.reloadAfterSave) {
       window.setTimeout(function(){ window.location.reload(); }, opts.reloadDelay || 700);
-    } else {
+    } else if (shouldScheduleInlineFollowupRender(inlineRenderResult)) {
       scheduleInlineControlsRender();
     }
     return saved;
@@ -9077,6 +10631,7 @@
 
   function startNativeEventFromV2TimeJump(days, profile, options){
     var bridge = window.__ASiteV2ReactBridge;
+    var opts = options || {};
     if (!bridge || typeof bridge.startYearEvent !== "function") {
       showToast("未找到原站事件启动接口；V2 时间已保存，但无法直接开启下一轮。", "warn");
       return false;
@@ -9084,15 +10639,19 @@
     try {
       var cleanDays = Math.max(0, Math.floor(Number(days) || 0));
       if (profile && typeof bridge.setPlayer === "function") {
-        bridge.setPlayer(preserveInlineTimeJumpContext(normalizePlayer(profile), profile));
+        var bridgeProfile = opts.alreadyNormalized === true ? profile : normalizePlayer(profile);
+        bridge.setPlayer(preserveInlineTimeJumpContext(bridgeProfile, profile));
       }
       var start = function(){
         var liveBridge = window.__ASiteV2ReactBridge || bridge;
         if (liveBridge && typeof liveBridge.startYearEvent === "function") {
-          if (options && options.clearCurrentEvent && typeof liveBridge.setCurrentYearEvent === "function") {
+          if (opts.clearCurrentEvent && typeof liveBridge.setCurrentYearEvent === "function") {
             liveBridge.setCurrentYearEvent(null);
           }
           liveBridge.startYearEvent(cleanDays);
+          if (opts.consumeCustomNextTheme) {
+            persistConsumedCustomThemeAfterNativeStart(profile, liveBridge, opts.consumeCustomNextThemeReason);
+          }
         }
       };
       if (typeof window.requestAnimationFrame === "function") {
@@ -9136,8 +10695,8 @@
       normalized.inspirationPoints = inspiration - 1;
       normalized.pendingAcceptedEvents = ensureArray(normalized.pendingAcceptedEvents);
       normalized.pendingStateDiffs = pendingDiffsForProfile(normalized);
-      var saved = await saveProfile(normalized);
-      var bridgePlayer = preserveInlineTimeJumpContext(normalizePlayer(saved || normalized), saved || normalized);
+      var saved = await saveProfile(normalized, {alreadyNormalized:true});
+      var bridgePlayer = preserveInlineTimeJumpContext(saved || normalized, saved || normalized);
       if (typeof bridge.setPlayer === "function") bridge.setPlayer(bridgePlayer);
       if (typeof bridge.setCurrentYearEvent === "function") bridge.setCurrentYearEvent(null);
       var days = Number(snapshot && snapshot.lastSelectedDays);
@@ -9269,8 +10828,8 @@
           createdAt: new Date().toISOString()
         };
         return normalizePlayer(next);
-      }, resultGranularity === "micro_action" ? "已把当前结果接入事件链；继续细看下一拍。" : "已把当前结果接入事件链；推进下一小段。", {clearCurrentEvent:true});
-      if (savedResultChainProfile) startNativeEventFromV2TimeJump(0, savedResultChainProfile, { clearCurrentEvent: true });
+      }, resultGranularity === "micro_action" ? "已把当前结果接入事件链；继续细看下一拍。" : "已把当前结果接入事件链；推进下一小段。", {clearCurrentEvent:true, resultAlreadyNormalized:true});
+      if (savedResultChainProfile) startNativeEventFromV2TimeJump(0, savedResultChainProfile, { clearCurrentEvent: true, alreadyNormalized: true });
       return;
     }
     if (action === "result-chain-commit") {
@@ -9281,7 +10840,7 @@
       }
       await mutateInlineProfile(function(profile){
         return settleNarrativeChainClosureWithLegacyState(profile, "result_stage_chain_commit", commitCandidate.event);
-      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE"});
+      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE", resultAlreadyNormalized:true});
       return;
     }
     if (action === "chain-continue") {
@@ -9306,27 +10865,27 @@
           createdAt: new Date().toISOString()
         };
         return normalizePlayer(next);
-      }, chainGranularity === "micro_action" ? "继续细看：将生成当前事件链的一个局部 beat。" : "推进一小段：将继续当前事件链的小场景。");
-      if (savedChainProfile) startNativeEventFromV2TimeJump(0, savedChainProfile, { clearCurrentEvent: true });
+      }, chainGranularity === "micro_action" ? "继续细看：将生成当前事件链的一个局部 beat。" : "推进一小段：将继续当前事件链的小场景。", {resultAlreadyNormalized:true});
+      if (savedChainProfile) startNativeEventFromV2TimeJump(0, savedChainProfile, { clearCurrentEvent: true, alreadyNormalized: true });
       return;
     }
     if (action === "chain-close") {
       await mutateInlineProfile(function(profile){
         var currentResult = getCurrentStoryResultCandidate();
         return settleNarrativeChainClosureWithLegacyState(profile, "user_inline_chain_closure", currentResult && currentResult.event);
-      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE"});
+      }, "事件链已收束并写入正史。", {clearCurrentEvent:true, phase:"IDLE", resultAlreadyNormalized:true});
       return;
     }
     if (action === "chain-cancel") {
       await mutateInlineProfile(function(profile){
         return cancelNarrativeChain(profile, "用户在主界面取消事件链。");
-      }, "已取消事件链；链内片段不会写入正史。");
+      }, "已取消事件链；链内片段不会写入正史。", {resultAlreadyNormalized:true});
       return;
     }
     if (action === "chain-keep-draft") {
       await mutateInlineProfile(function(profile){
         return reopenNarrativeChainDraft(profile);
-      }, "已保留事件链草稿，未推进时间。");
+      }, "已保留事件链草稿，未推进时间。", {resultAlreadyNormalized:true});
       return;
     }
     if (action === "fate-intervention") {
@@ -9335,7 +10894,7 @@
     }
     if (action === "granularity") {
       var value = target.getAttribute("data-value");
-      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {granularityPreset:value, extractionMode:"auto"}); }, "镜头粒度已切换为：" + granularityLabel(value));
+      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {granularityPreset:value, extractionMode:"auto"}); }, "镜头粒度已切换为：" + granularityLabel(value), {resultAlreadyNormalized:true});
       return;
     }
     if (action === "time-jump") {
@@ -9352,10 +10911,10 @@
             days: days,
             reason: "time_jump_requires_chain_closure"
           });
-        }, "当前事件链尚未收束。请先收束、取消，或保留草稿但不推进。");
+        }, "当前事件链尚未收束。请先收束、取消，或保留草稿但不推进。", {resultAlreadyNormalized:true});
         return;
       }
-      var savedJumpProfile = await mutateInlineProfile(function(profile){ return applyInlineTimeJump(profile, mode, custom && custom.value); }, "时间推进已写回本地档案。");
+      var savedJumpProfile = await mutateInlineProfile(function(profile){ return applyInlineTimeJump(profile, mode, custom && custom.value); }, "时间推进已写回本地档案。", {resultAlreadyNormalized:true});
       // V2 has already advanced and synced the active profile above. Starting
       // the legacy engine with the real day delta would apply the same time
       // jump a second time inside React. Keep the true delta in
@@ -9385,7 +10944,7 @@
       target.removeAttribute("data-asv2-confirm-until");
       target.textContent = target.getAttribute("data-asv2-original-text") || "离场并压缩";
       target.removeAttribute("data-asv2-original-text");
-      mutateInlineProfile(function(profile){ return compressAndLeaveScene(profile, "user_inline_leave_scene"); }, "已离场并压缩短期场景记忆。");
+      mutateInlineProfile(function(profile){ return compressAndLeaveScene(profile, "user_inline_leave_scene"); }, "已离场并压缩短期场景记忆。", {resultAlreadyNormalized:true});
       return;
     }
     if (action === "advanced") {
@@ -9496,11 +11055,11 @@
     var field = target.getAttribute("data-asv2-inline-field");
     if (!field) return;
     if (field === "detailLevel") {
-      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {detailLevel: target.value || "standard"}); }, "细节等级已切换为：" + detailLabel(target.value));
+      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {detailLevel: target.value || "standard"}); }, "细节等级已切换为：" + detailLabel(target.value), {resultAlreadyNormalized:true});
     } else if (field === "lockCurrentScene") {
-      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {lockCurrentScene: !!target.checked}); }, target.checked ? "已锁定当前场景。" : "已解除场景锁定。");
+      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {lockCurrentScene: !!target.checked}); }, target.checked ? "已锁定当前场景。" : "已解除场景锁定。", {resultAlreadyNormalized:true});
     } else if (field === "allowTimeJump") {
-      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {allowTimeJump: !!target.checked}); }, target.checked ? "已允许时间跳跃。" : "已关闭时间跳跃。");
+      mutateInlineProfile(function(profile){ return setInlineControlFields(profile, {allowTimeJump: !!target.checked}); }, target.checked ? "已允许时间跳跃。" : "已关闭时间跳跃。", {resultAlreadyNormalized:true});
     }
   }
 
@@ -9521,14 +11080,70 @@
     return value.indexOf("接受结果并继续") >= 0;
   }
 
+  function shouldKeepFullAcceptChainDiagnostics(){
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem("aSiteV2FullAcceptChainDiagnostics") === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function slowestAcceptChainStage(timings){
+    var slowest = null;
+    ensureArray(timings).forEach(function(item){
+      if (!item) return;
+      if (!slowest || Number(item.duration || 0) > Number(slowest.duration || 0)) slowest = item;
+    });
+    return slowest;
+  }
+
+  function compactAcceptChainDiagnostics(data){
+    var source = isObject(data) ? data : {};
+    var timings = ensureArray(source.timings);
+    return {
+      marker: trimText(source.marker) || "A_SITE_V2_ACCEPT_CHAIN",
+      timestamp: trimText(source.timestamp),
+      status: trimText(source.status) || "success",
+      duration: Number.isFinite(Number(source.duration)) ? Number(source.duration) : 0,
+      buttonText: trimText(source.buttonText),
+      profileId: trimText(source.profileId),
+      acceptedStoryEventId: trimText(source.acceptedStoryEventId),
+      candidateEventId: trimText(source.candidateEventId),
+      storyTextLength: Number(source.storyTextLength || 0) || 0,
+      storyTextSource: trimText(source.storyTextSource),
+      awaitingOutcomeResolution: source.awaitingOutcomeResolution === true,
+      isInvalidStoryTextResult: source.isInvalidStoryTextResult === true,
+      queuedForStateSettlement: source.queuedForStateSettlement === true,
+      treatedAsChainBeat: source.treatedAsChainBeat === true,
+      autoCommittedToCanon: source.autoCommittedToCanon === true,
+      savedHistoryLength: Number(source.savedHistoryLength || 0) || 0,
+      savedCanonHistoryLength: Number(source.savedCanonHistoryLength || 0) || 0,
+      savedEventCount: Number(source.savedEventCount || 0) || 0,
+      savedStateDiffHistoryLength: Number(source.savedStateDiffHistoryLength || 0) || 0,
+      savedPatchHistoryLength: Number(source.savedPatchHistoryLength || 0) || 0,
+      pendingAcceptedBefore: source.pendingAcceptedBefore,
+      pendingStateDiffsBefore: source.pendingStateDiffsBefore,
+      pendingAcceptedAfter: source.pendingAcceptedAfter,
+      pendingStateDiffsAfter: source.pendingStateDiffsAfter,
+      reactBridgeSynced: source.reactBridgeSynced === true,
+      reactBridgeSyncAttempts: Number(source.reactBridgeSyncAttempts || 0) || 0,
+      timingCount: timings.length,
+      slowestStage: slowestAcceptChainStage(timings),
+      error: trimText(source.error)
+    };
+  }
+
   function logAcceptChainDiagnostics(data){
     var safe = Object.assign({
       marker: "A_SITE_V2_ACCEPT_CHAIN",
       timestamp: new Date().toISOString()
     }, data || {});
+    var duration = Number.isFinite(Number(safe.duration)) ? Number(safe.duration) : 0;
+    var compact = compactAcceptChainDiagnostics(safe);
+    var keepFull = shouldKeepFullAcceptChainDiagnostics();
     try {
-      console.info("[A-Site V2 AcceptChain]", safe);
-      console.info("[A-Site V2 AcceptChain JSON] " + JSON.stringify(safe));
+      console.info("[A-Site V2 AcceptChain]", compact);
+      if (keepFull) console.info("[A-Site V2 AcceptChain JSON] " + JSON.stringify(safe));
     } catch (_) {}
     try {
       var bridge = window.__ASiteV2ReactBridge;
@@ -9537,13 +11152,23 @@
           id: "v2-accept-chain-" + Date.now(),
           timestamp: safe.timestamp,
           step: "A_SITE_V2_ACCEPT_CHAIN",
-          input: safe,
-          output: "Accept chain diagnostic",
-          status: "success",
-          duration: 0
+          input: keepFull ? safe : compact,
+          output: keepFull ? "Accept chain diagnostic" : "Accept chain diagnostic compacted; set localStorage.aSiteV2FullAcceptChainDiagnostics=1 for full JSON.",
+          status: trimText(safe.status) || "success",
+          duration: duration
         });
       }
     } catch (_) {}
+  }
+
+  function recordAcceptChainStage(timings, name, startedAt, detail){
+    var duration = Math.max(0, Math.round((runtimeNow() - Number(startedAt || 0)) * 10) / 10);
+    var entry = Object.assign({
+      name: trimText(name) || "unknown",
+      duration: duration
+    }, isObject(detail) ? detail : {});
+    if (Array.isArray(timings)) timings.push(entry);
+    return entry;
   }
 
   async function handleLegacyAcceptButtonCapture(event){
@@ -9616,7 +11241,10 @@
       pendingAcceptedBefore: ensureArray(snapshot.player.pendingAcceptedEvents).length,
       pendingStateDiffsBefore: ensureArray(snapshot.player.pendingStateDiffs).length
     });
-    if (invalidStory || awaitingOutcomeResolution) {
+    if (awaitingOutcomeResolution) {
+      return;
+    }
+    if (invalidStory) {
       if (isResultContinueButtonText(buttonText)) {
         return;
       }
@@ -9629,28 +11257,89 @@
     event.preventDefault();
     event.stopPropagation();
     if (event.stopImmediatePropagation) event.stopImmediatePropagation();
-    if (legacyAcceptCaptureInProgress) return;
+    if (legacyAcceptCaptureInProgress) {
+      showToast("正在接受并写入上一段正文，请稍候。", "warn");
+      return;
+    }
     legacyAcceptCaptureInProgress = true;
+    var acceptChainStartedAt = runtimeNow();
+    var acceptChainTimings = [];
     try {
+      var stageStartedAt = runtimeNow();
       var accepted = interceptLegacyAccept(snapshot.player, currentEventForAccept, {autoCommit:true});
+      recordAcceptChainStage(acceptChainTimings, "interceptLegacyAccept", stageStartedAt, buildRuntimeProfileTimingDetail(accepted));
       var acceptedStoryEventId = trimText(accepted.lastV2AcceptedStoryEventId);
+      stageStartedAt = runtimeNow();
       var chainAfterAccept = getOpenNarrativeChain(accepted);
       var isQueuedForSettlement = eventIsQueuedForStateSettlement(accepted, acceptedStoryEventId);
       var isChainBeat = !!(chainAfterAccept && chainAfterAccept.status === "open" && acceptedStoryEventId && !isQueuedForSettlement);
+      recordAcceptChainStage(acceptChainTimings, "classifyAcceptedEvent", stageStartedAt, {
+        acceptedStoryEventId: acceptedStoryEventId,
+        queuedForStateSettlement: isQueuedForSettlement,
+        treatedAsChainBeat: isChainBeat
+      });
       var autoCommitted = false;
       if (acceptedStoryEventId && !isChainBeat) {
-        var committed = await settleAcceptedStoryEventWithLegacyState(accepted, acceptedStoryEventId);
+        stageStartedAt = runtimeNow();
+        var committed = await settleAcceptedStoryEventWithLegacyState(accepted, acceptedStoryEventId, {alreadyNormalized:true, skipModelExtraction:true});
+        recordAcceptChainStage(acceptChainTimings, "settleAcceptedStoryEventWithLegacyState", stageStartedAt, {
+          aborted: !!(committed && committed.__asv2AbortSave),
+          modelExtractionSkipped: true
+        });
         if (committed && !committed.__asv2AbortSave) {
           accepted = committed;
           autoCommitted = storyEventIsAcceptedInProfile(accepted, acceptedStoryEventId);
         }
+      } else {
+        recordAcceptChainStage(acceptChainTimings, "settleAcceptedStoryEventWithLegacyState", runtimeNow(), {
+          skipped: true,
+          reason: acceptedStoryEventId ? "chain_beat" : "missing_accepted_story_event_id"
+        });
       }
-      var saved = await saveProfile(accepted);
-      if (!saved || saved.__asv2AbortSave) return;
+      stageStartedAt = runtimeNow();
+      var saved = await saveProfile(accepted, {alreadyNormalized:true});
+      recordAcceptChainStage(acceptChainTimings, "saveProfile", stageStartedAt, buildRuntimeProfileTimingDetail(saved || accepted));
+      if (!saved || saved.__asv2AbortSave) {
+        logAcceptChainDiagnostics({
+          duration: Math.max(0, Math.round((runtimeNow() - acceptChainStartedAt) * 10) / 10),
+          timings: acceptChainTimings,
+          status: "aborted_save",
+          buttonText: buttonText,
+          bridgeExists: !!window.__ASiteV2ReactBridge,
+          profileId: trimText((saved || accepted || {}).id || (saved || accepted || {}).profileId),
+          currentYearEventExists: true,
+          currentEventExists: true,
+          acceptedStoryEventId: acceptedStoryEventId
+        });
+        return;
+      }
+      stageStartedAt = runtimeNow();
       var syncResult = await syncReactBridgeProfileAndVerify(saved, {clearCurrentEvent:true, phase:"IDLE", acceptedEventId: acceptedStoryEventId});
-      await renderInlineControlsNow().catch(function(error){ console.warn("[A-Site V2] inline controls render after accept failed:", error); });
-      scheduleInlineControlsRender();
+      recordAcceptChainStage(acceptChainTimings, "syncReactBridgeProfileAndVerify", stageStartedAt, {
+        synced: syncResult && syncResult.synced === true,
+        attempts: syncResult && syncResult.attempts || 0
+      });
+      stageStartedAt = runtimeNow();
+      var acceptInlineRenderResult = await renderInlineControlsNow().catch(function(error){
+        console.warn("[A-Site V2] inline controls render after accept failed:", error);
+        return null;
+      });
+      recordAcceptChainStage(acceptChainTimings, "renderInlineControlsNow", stageStartedAt, Object.assign(
+        buildRuntimeProfileTimingDetail(saved),
+        {followupRenderQueued: shouldScheduleInlineFollowupRender(acceptInlineRenderResult)}
+      ));
+      if (shouldScheduleInlineFollowupRender(acceptInlineRenderResult)) scheduleInlineControlsRender();
+      var acceptChainDuration = Math.max(0, Math.round((runtimeNow() - acceptChainStartedAt) * 10) / 10);
+      recordRuntimeTiming("handleLegacyAcceptButtonCapture", acceptChainStartedAt, {
+        status: "success",
+        acceptedStoryEventId: acceptedStoryEventId,
+        autoCommittedToCanon: autoCommitted,
+        timingCount: acceptChainTimings.length,
+        slowestStage: acceptChainTimings.slice().sort(function(a, b){ return Number(b.duration || 0) - Number(a.duration || 0); })[0] || null
+      }, 80);
       logAcceptChainDiagnostics({
+        duration: acceptChainDuration,
+        timings: acceptChainTimings,
         buttonText: buttonText,
         bridgeExists: !!window.__ASiteV2ReactBridge,
         profileId: trimText(saved.id || saved.profileId),
@@ -9687,6 +11376,17 @@
       }
     } catch (error) {
       console.error("[A-Site V2] legacy accept capture failed:", error);
+      logAcceptChainDiagnostics({
+        duration: Math.max(0, Math.round((runtimeNow() - acceptChainStartedAt) * 10) / 10),
+        timings: acceptChainTimings,
+        status: "error",
+        error: String(error && error.message || error),
+        buttonText: buttonText,
+        bridgeExists: !!window.__ASiteV2ReactBridge,
+        profileId: snapshot && snapshot.player && trimText(snapshot.player.id || snapshot.player.profileId),
+        currentYearEventExists: !!(snapshot && snapshot.currentYearEvent),
+        currentEventExists: !!(snapshot && snapshot.currentEvent)
+      });
       showToast("V2 接受正文失败：" + (error && error.message || error), "warn");
     } finally {
       legacyAcceptCaptureInProgress = false;
@@ -9700,12 +11400,14 @@
     document.addEventListener("click", handleRerollThemeButtonCapture, true);
     document.addEventListener("click", handleLegacyAcceptButtonCapture, true);
     document.addEventListener("click", handleNativeFateSubmitCapture, true);
+    document.addEventListener("click", handleNativeConsumedCustomThemeCapture, true);
     document.addEventListener("click", handleInlineControlClick);
     document.addEventListener("change", handleInlineControlChange);
     scheduleInlineControlsRender();
     installCharacterGenerationDirectiveField();
     if (window.MutationObserver && document.body) {
-      var observer = new MutationObserver(function(){
+      var observer = new MutationObserver(function(mutations){
+        if (mutationsAreOnlyASiteV2Owned(mutations)) return;
         installCharacterGenerationDirectiveField();
         scheduleInlineControlsRender();
       });
@@ -9725,7 +11427,7 @@
         try {
           var profile = await getLatestProfile();
           if (!profile) return;
-          var normalized = normalizePlayer(profile);
+          var normalized = profile;
           var name = trimText(normalized.name || normalized.characterName || normalized.playerName);
           var age = trimText(normalized.age);
           if (!name || !age) return;
@@ -9750,12 +11452,13 @@
     }
   }
 
-  function renderPanel(profile){
-    var normalized = profile ? normalizePlayer(profile) : null;
+  function renderPanel(profile, options){
+    var opts = options || {};
+    var normalized = profile ? (opts.alreadyNormalized === true ? profile : normalizePlayer(profile)) : null;
     var layers = normalized && normalized.knowledgeLayers || defaultKnowledgeLayers();
     var summaries = normalized && normalized.structuredSummaries || defaultStructuredSummaries();
     var conflicts = normalized ? detectSettingConflicts(normalized) : [];
-    var drift = normalized ? detectWorldDescriptionDrift(profile || normalized) : false;
+    var drift = normalized ? detectWorldDescriptionDrift(opts.alreadyNormalized === true ? normalized : profile || normalized) : false;
     var hasRollbackCandidates = normalized ? ensureArray(normalized.patchHistory).some(function(record){
       return record && record.id && record.sourceEventId && !record.rolledBackAt && record.reversible !== false;
     }) : false;
@@ -9807,7 +11510,7 @@
         (drift ? '检测到 worldDescription 与 fixed/dynamic 可能不同步；保存时会自动重组。' : 'worldDescription 将按 fixed/dynamic 运行时合成。') +
         '</p>' + (conflicts.length ? '<div class="asv2-warn">' + conflicts.map(function(item){return escapeHtml(item.suggestion + " fixed: " + item.fixedRule + " / dynamic: " + item.dynamicStatement);}).join("<br>") + '</div>' : '<p class="asv2-note">未发现内置规则可识别的 fixed/dynamic 高风险冲突。</p>') + '</section>' : '',
       normalized ? renderDebugDetails("Prompt / Retrieval 调试", renderRetrievalDebug(normalized), false) : '',
-      normalized ? renderDebugDetails("Prompt 预览", '<section><h3>Prompt 预览</h3><textarea id="asv2-preview" readonly>' + escapeHtml(buildPromptPreview(normalized)) + '</textarea></section>', false) : '',
+      normalized ? renderDebugDetails("Prompt 预览", renderLazyPromptPreview(), false) : '',
       latestMigrationReport.length ? renderDebugDetails("最近迁移报告", '<section><h3>最近迁移报告</h3><ul>' + latestMigrationReport.map(function(item){return '<li>' + escapeHtml(item) + '</li>';}).join("") + '</ul></section>', false) : '',
       '</div>',
       '<div class="asv2-actions"><button id="asv2-refresh">刷新读取</button><button id="asv2-save">保存并迁移</button><button id="asv2-export">导出V2存档</button></div>'
@@ -9821,10 +11524,11 @@
     var exportButton = panel.querySelector("#asv2-export");
     var mode = panel.querySelector("#asv2-age-mode");
     if (mode && profile && profile.characterAgeState) mode.value = profile.characterAgeState.ageDisplayMode || "auto_from_birthdate";
+    attachLazyPromptPreview(panel, profile);
     if (close) close.onclick = function(){ panel.classList.remove("open"); };
     if (refresh) refresh.onclick = async function(){
       var latest = await getActiveProfile().catch(function(){ return null; });
-      panel.innerHTML = renderPanel(latest);
+      panel.innerHTML = renderPanel(latest, {alreadyNormalized:true});
       attachPanelEvents(panel, latest);
     };
     if (save) save.onclick = async function(){
@@ -9864,7 +11568,7 @@
       latest.nextGranularitySuggestions = immersionState.sceneControl.suggestedNextGranularities;
       latest.loreEntries = collectLoreEntries(panel);
       latest.npcProfiles = collectNpcProfiles(panel);
-      var saved = await saveProfile(normalizePlayer(latest, {
+      var normalizedPanelProfile = normalizePlayer(latest, {
         currentDate: valueOf("asv2-current-date"),
         startDate: valueOf("asv2-start-date"),
         legalBirthDate: valueOf("asv2-birth-date"),
@@ -9872,8 +11576,9 @@
         manualAgeText: valueOf("asv2-manual-age"),
         seasonText: valueOf("asv2-season"),
         timeOfDayText: valueOf("asv2-time-of-day")
-      }));
-      panel.innerHTML = renderPanel(saved);
+      });
+      var saved = await saveProfile(normalizedPanelProfile, {alreadyNormalized:true});
+      panel.innerHTML = renderPanel(saved, {alreadyNormalized:true});
       attachPanelEvents(panel, saved);
       showToast("A站V2字段已保存到本地档案。刷新页面后主界面会读取最新年龄/日期。");
     };
@@ -9889,20 +11594,18 @@
         await getSessionLogs(normalized.id).catch(function(){ return []; }),
         getRuntimeLogMirror(normalized.id)
       );
+      var compactedLogs = compactLogsForExport(logs);
       var payload = {
         schemaVersion: SCHEMA_VERSION,
         appVersion: APP_PATCH_VERSION,
         version: "1.23",
         player: normalized,
-        logs: logs,
+        logs: compactedLogs,
         isPruned: false,
         exportedAt: new Date().toISOString(),
-        stateDiffHistory: normalized.stateDiffHistory,
         pendingStateDiffs: normalized.pendingStateDiffs,
         pendingAcceptedEvents: normalized.pendingAcceptedEvents,
         timeAdjustmentHistory: normalized.timeAdjustmentHistory,
-        draftHistory: normalized.draftHistory,
-        canonHistory: normalized.canonHistory,
         draftExclusions: normalized.draftExclusions,
         patchHistory: normalized.patchHistory,
         rollbackHistory: normalized.rollbackHistory,
@@ -9914,7 +11617,9 @@
         loreEntries: normalized.loreEntries,
         npcProfiles: normalized.npcProfiles,
         retrievalLog: normalized.retrievalLog,
-        nextGranularitySuggestions: normalized.nextGranularitySuggestions
+        nextGranularitySuggestions: normalized.nextGranularitySuggestions,
+        v2RootMirrorSummary: buildRootMirrorSummary(normalized, "panel_export_root_history_mirrors_omitted"),
+        v2LogExportSummary: buildLogExportSummary(logs, compactedLogs)
       };
       downloadText("save_" + (normalized.name || "player") + "_v2_" + formatDate(new Date()) + ".json", JSON.stringify(payload, null, 2));
     };
@@ -9989,8 +11694,8 @@
         sceneProfile.loreEntries = collectLoreEntries(panel);
         sceneProfile.npcProfiles = collectNpcProfiles(panel);
         var leftScene = compressAndLeaveScene(sceneProfile, "user_leave_scene");
-        var savedScene = await saveProfile(leftScene);
-        panel.innerHTML = renderPanel(savedScene);
+        var savedScene = await saveProfile(leftScene, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedScene, {alreadyNormalized:true});
         attachPanelEvents(panel, savedScene);
         showToast("已离场并把短期镜头记忆压缩到 sceneMemoryArchive / NPC recentInteractions。");
         return;
@@ -10023,8 +11728,8 @@
           return;
         }
         var rolled = rollbackEventPatches(rollbackProfile, rollbackEventId, []);
-        var savedRollback = await saveProfile(rolled);
-        panel.innerHTML = renderPanel(savedRollback);
+        var savedRollback = await saveProfile(rolled, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedRollback, {alreadyNormalized:true});
         attachPanelEvents(panel, savedRollback);
         showToast("已执行该事件的可安全回滚 patches；冲突记录在 rollbackHistory。");
         return;
@@ -10036,8 +11741,8 @@
           return;
         }
         var cleanedProfile = cleanupInvalidDrafts(cleanupProfile);
-        var savedCleaned = await saveProfile(cleanedProfile);
-        panel.innerHTML = renderPanel(savedCleaned);
+        var savedCleaned = await saveProfile(cleanedProfile, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedCleaned, {alreadyNormalized:true});
         attachPanelEvents(panel, savedCleaned);
         showToast("已清理 rejected / superseded / invalid 待审正文与关联 pending diff。");
         return;
@@ -10049,10 +11754,10 @@
           showToast("未找到本地档案，无法接受正文。", "warn");
           return;
         }
-        var acceptedTextProfile = acceptStoryText(acceptProfile, id, {skipPostAcceptanceExtraction:true});
+        var acceptedTextProfile = acceptStoryText(acceptProfile, id, {skipPostAcceptanceExtraction:true, alreadyNormalized:true});
         var settledTextProfile = await settleAcceptedStoryEventWithLegacyState(acceptedTextProfile, id);
-        var savedAcceptedText = await saveProfile(settledTextProfile);
-        panel.innerHTML = renderPanel(savedAcceptedText);
+        var savedAcceptedText = await saveProfile(settledTextProfile, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedAcceptedText, {alreadyNormalized:true});
         attachPanelEvents(panel, savedAcceptedText);
         showToast("已通过调试入口自动接受并结算；普通流程无需二次确认。");
         return;
@@ -10064,8 +11769,8 @@
           return;
         }
         var rejectedStoryProfile = rejectStoryText(rejectProfile, id, "用户在 A站V2 面板拒绝正文。");
-        var savedRejectedStory = await saveProfile(rejectedStoryProfile);
-        panel.innerHTML = renderPanel(savedRejectedStory);
+        var savedRejectedStory = await saveProfile(rejectedStoryProfile, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedRejectedStory, {alreadyNormalized:true});
         attachPanelEvents(panel, savedRejectedStory);
         showToast("已拒绝正文并清理该事件关联 pending diff。");
         return;
@@ -10075,9 +11780,9 @@
         var afterRejectDiffsProfile = await getActiveProfile().catch(function(){ return null; });
         if (afterRejectDiffsProfile) {
           afterRejectDiffsProfile.pendingStateDiffs = pendingDiffsForProfile(afterRejectDiffsProfile);
-          afterRejectDiffsProfile = await saveProfile(afterRejectDiffsProfile);
+          afterRejectDiffsProfile = await saveProfile(afterRejectDiffsProfile, {alreadyNormalized:true});
         }
-        panel.innerHTML = renderPanel(afterRejectDiffsProfile);
+        panel.innerHTML = renderPanel(afterRejectDiffsProfile, {alreadyNormalized:true});
         attachPanelEvents(panel, afterRejectDiffsProfile);
         showToast("已拒绝该事件关联的 pending diff。");
         return;
@@ -10090,8 +11795,8 @@
           return;
         }
         var rolledOne = rollbackEventPatches(rollbackOneProfile, patchEventId, [id]);
-        var savedRolledOne = await saveProfile(rolledOne);
-        panel.innerHTML = renderPanel(savedRolledOne);
+        var savedRolledOne = await saveProfile(rolledOne, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedRolledOne, {alreadyNormalized:true});
         attachPanelEvents(panel, savedRolledOne);
         showToast("已尝试回滚该 patch；若目标字段已变化，会记录冲突。");
         return;
@@ -10104,7 +11809,7 @@
         diff.resolvedAt = new Date().toISOString();
         writePendingDiffs(diffs);
         var rejectedProfile = await getActiveProfile().catch(function(){ return null; });
-        panel.innerHTML = renderPanel(rejectedProfile);
+        panel.innerHTML = renderPanel(rejectedProfile, {alreadyNormalized:true});
         attachPanelEvents(panel, rejectedProfile);
         showToast("已拒绝该状态更新建议。");
         return;
@@ -10121,8 +11826,8 @@
         var stored = diffs.map(function(item){ return item.id === id ? Object.assign({}, editedDiff, {status:"accepted", reviewedAt:new Date().toISOString()}) : item; });
         diffs = stored;
         writePendingDiffs(diffs);
-        var savedNext = await saveProfile(next);
-        panel.innerHTML = renderPanel(savedNext);
+        var savedNext = await saveProfile(next, {alreadyNormalized:true});
+        panel.innerHTML = renderPanel(savedNext, {alreadyNormalized:true});
         attachPanelEvents(panel, savedNext);
         showToast("已通过调试面板写入所选状态；普通流程会在接受命运时自动结算。");
       }
@@ -10188,7 +11893,7 @@
     var panel = document.getElementById("a-site-v2-panel");
     if (!panel) return;
     var profile = await getActiveProfile().catch(function(){ return null; });
-    panel.innerHTML = renderPanel(profile);
+    panel.innerHTML = renderPanel(profile, {alreadyNormalized:true});
     attachPanelEvents(panel, profile);
     if (forceOpen === false) panel.classList.remove("open");
     else if (forceOpen === true || !panel.classList.contains("open")) panel.classList.add("open");
@@ -10215,6 +11920,10 @@
     buildContextForAgent: buildContextForAgent,
     buildContextBlock: buildContextBlock,
     buildMainGenerationContextBlock: buildMainGenerationContextBlock,
+    buildMainTaskGenerationContextBlock: buildMainTaskGenerationContextBlock,
+    isTaskGenerationAgent: isTaskGenerationAgent,
+    countASiteAgentContractBlocks: countASiteAgentContractBlocks,
+    getRuntimeTimingLog: getRuntimeTimingLog,
     buildPrivateFictionBaselineBlock: buildPrivateFictionBaselineBlock,
     buildCharacterGenerationHardDirectiveBlock: buildCharacterGenerationHardDirectiveBlock,
     readCharacterGenerationDirective: readCharacterGenerationDirective,

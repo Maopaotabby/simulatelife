@@ -1,0 +1,80 @@
+@media (max-width: 720px) {
+  .ui-timeline-shell {
+    padding: 14px 10px calc(132px + env(safe-area-inset-bottom, 0px)) !important;
+    scroll-padding-top: calc(env(safe-area-inset-top, 0px) + 88px);
+  }
+
+  .ui-action-shell {
+    padding: 0 10px calc(132px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .ui-timeline-card {
+    padding: 12px 10px !important;
+  }
+
+  .ui-story-text-block {
+    padding: 11px 12px !important;
+    border-radius: 14px !important;
+    line-height: 1.78 !important;
+    word-break: normal !important;
+    overflow-wrap: break-word !important;
+  }
+
+  .ui-story-text-block,
+  .current-event-story,
+  .ghost-story,
+  .ui-timeline-card .ui-story-text,
+  .ui-action-shell .ui-story-text,
+  .ui-timeline-card .font-serif:not(button):not(.ui-btn),
+  .ui-action-shell .font-serif:not(button):not(.ui-btn) {
+    font-size: 18px !important;
+    line-height: 1.78 !important;
+    font-weight: 500 !important;
+    letter-spacing: 0 !important;
+    word-spacing: 0 !important;
+    text-align: left !important;
+    word-break: normal !important;
+    overflow-wrap: break-word !important;
+    line-break: loose;
+    -webkit-font-smoothing: antialiased;
+    text-wrap: pretty;
+  }
+
+  .ui-timeline-card .text-3xl.font-serif,
+  .ui-timeline-card .text-4xl.font-serif,
+  .ui-action-shell .text-3xl.font-serif,
+  .ui-action-shell .text-4xl.font-serif {
+    font-size: 19px !important;
+    line-height: 1.82 !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+  }
+
+  .ui-story-topbar {
+    padding: 10px 10px 0 !important;
+  }
+
+  .ui-mobile-header {
+    border-radius: 0 0 16px 16px !important;
+  }
+
+  .ui-scroll-bottom-btn {
+    right: 12px !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 88px) !important;
+    width: 54px !important;
+    height: 54px !important;
+  }
+
+  #a-site-v2-button {
+    right: 14px !important;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 18px) !important;
+    padding: 8px 10px !important;
+    font-size: 12px !important;
+  }
+
+  .ui-action-shell .ui-choice-card,
+  .ui-timeline-shell .ui-choice-card {
+    font-size: 15px !important;
+    line-height: 1.58 !important;
+  }
+}
