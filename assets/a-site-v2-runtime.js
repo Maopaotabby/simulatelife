@@ -599,7 +599,12 @@
     if (hasPreciseTimeAdjustments) return false;
     var current = parseDate(existingCalendar && existingCalendar.currentDate);
     var start = parseDate(existingCalendar && existingCalendar.startDate);
-    var calendarLooksInferred = !current || reliability === "inferred_legacy" || (start && current && formatDate(start) === formatDate(current) && Number(existingCalendar.elapsedDays || 0) === 0);
+    var hasReliableCalendarProgress = !!current && Number(existingCalendar && existingCalendar.elapsedDays || 0) > 0 &&
+      (!start || formatDate(start) !== formatDate(current));
+    var calendarLooksInferred = !current || (!hasReliableCalendarProgress && (
+      reliability === "inferred_legacy" ||
+      (start && current && formatDate(start) === formatDate(current) && Number(existingCalendar.elapsedDays || 0) === 0)
+    ));
     return legacyDays !== null && calendarLooksInferred && (hasHistoryAnchor || !!extractCalendarYearNumber(player && player.currentYear));
   }
 
@@ -5345,11 +5350,16 @@
   function applyTimeSuggestion(player, suggestion){
     if (!suggestion || typeof suggestion.days !== "number") return player;
     var next = clonePlain(player);
-    var normalized = normalizePlayer(next);
-    var current = parseDate(normalized.calendarState.currentDate);
-    if (!current) return normalized;
-    var oldDate = normalized.calendarState.currentDate;
+    var rawCurrentDate = trimText(next && next.calendarState && next.calendarState.currentDate);
+    var fallbackNormalized = rawCurrentDate ? null : normalizePlayer(next);
+    var current = parseDate(rawCurrentDate) || parseDate(fallbackNormalized && fallbackNormalized.calendarState && fallbackNormalized.calendarState.currentDate);
+    if (!current) return fallbackNormalized || normalizePlayer(next);
+    var oldDate = rawCurrentDate || (fallbackNormalized && fallbackNormalized.calendarState && fallbackNormalized.calendarState.currentDate) || "";
     var newDate = formatDate(addDays(current, suggestion.days));
+    var baseTotalDays = Number(next.totalDays);
+    var normalizeOptions = {currentDate: newDate};
+    if (Number.isFinite(baseTotalDays)) normalizeOptions.totalDays = Math.max(0, Math.floor(baseTotalDays + suggestion.days));
+    var normalized = normalizePlayer(next, normalizeOptions);
     normalized.timeAdjustmentHistory = ensureArray(normalized.timeAdjustmentHistory);
     normalized.timeAdjustmentHistory.push({
       id: makeId("time_adjustment"),
@@ -5361,7 +5371,7 @@
       evidence: suggestion.evidence || "",
       confirmedAt: new Date().toISOString()
     });
-    return normalizePlayer(normalized, {currentDate: newDate});
+    return normalized;
   }
 
   function applyTimeSuggestionWithHistory(player, suggestion, stateDiff){
@@ -5458,15 +5468,16 @@
 
   function buildStoryEventFromLegacy(player, event){
     var normalized = normalizePlayer(player || {});
-    var cachedTimeline = getLatestSavedProfileCacheForProfile(normalized);
-    var timelineProfile = cachedTimeline || normalized;
     var source = isObject(event) ? event : {};
     var text = pickStoryText(source);
     var eventId = trimText(source.v2StoryEventId || source.id) || makeId("event");
     var action = source.selectedOption && source.selectedOption.text || source.action || source.playerAction || "";
     var status = trimText(source.v2Status || source.status) || "accepted_text_pending_state";
     var inlineTimeContext = getInlineTimeJumpContextForStoryBuild(normalized);
-    var preferV2Timeline = !!inlineTimeContext || !!cachedTimeline;
+    var cachedTimeline = inlineTimeContext ? getLatestSavedProfileCacheForProfile(normalized) : null;
+    if (cachedTimeline && isLikelyDefaultBlankProfile(cachedTimeline)) cachedTimeline = null;
+    var timelineProfile = inlineTimeContext && cachedTimeline ? cachedTimeline : normalized;
+    var preferV2Timeline = !!inlineTimeContext;
     var rawEventYear = trimText(source.eventYear || source.year);
     var eventYearText = inlineTimeContext && inlineTimeContext.targetYearText ? inlineTimeContext.targetYearText : (preferV2Timeline && timelineProfile.currentYear ? timelineProfile.currentYear : (extractCalendarYearNumber(rawEventYear) !== null ? rawEventYear : timelineProfile.currentYear));
     var eventAgeText = inlineTimeContext && inlineTimeContext.targetAgeText ? inlineTimeContext.targetAgeText : (preferV2Timeline && timelineProfile.age ? timelineProfile.age : (extractAgeText(source.nextAge || source.eventAge || source.age || rawEventYear) || timelineProfile.age));
