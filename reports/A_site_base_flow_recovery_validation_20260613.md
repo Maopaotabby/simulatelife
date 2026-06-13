@@ -39,6 +39,16 @@ The post-accept extraction prompt now also instructs `STORYTELLER_DATA` to use t
 
 Reason: the live Pages run produced a selected accepted `goals` patch with `{summary,status}`, which was recorded in `stateDiffHistory` but did not change `player.goals`.
 
+### 5. Placeholder API verify load guard
+
+`patchFetch()` now intercepts only API verification requests when the public build placeholder key is being used:
+
+- Matches `API_VERIFY` / `Respond with JSON: {"test": true}` verification prompts.
+- Blocks only empty/placeholder authorization such as `PUBLIC_BUILD_API_KEY_REMOVED`.
+- Real API keys and non-verification story requests continue to pass through.
+
+Reason: a clean mobile-size Pages load was otherwise issuing six network `401` requests to chat-completion endpoints with `Bearer PUBLIC_BUILD_API_KEY_REMOVED`, polluting load verification and slowing the page.
+
 ## Validation
 
 ### Static
@@ -138,6 +148,45 @@ Expected and observed:
 
 Result: passed.
 
+### VM: placeholder API verification guard
+
+Scenario:
+
+- Verification payload with `Authorization: Bearer PUBLIC_BUILD_API_KEY_REMOVED`.
+- Same verification payload with `Authorization: Bearer sk-real`.
+- Non-verification story payload with placeholder authorization.
+
+Expected and observed:
+
+- Placeholder verification is blocked locally.
+- Real-key verification is not blocked.
+- Non-verification story payload is not blocked by this guard.
+
+Result: passed.
+
+### Playwright: simulated mobile Pages load
+
+Page:
+
+- `https://maopaotabby.github.io/simulatelife/index.html?v=20260613-base-flow-closure-b-cleanmobile`
+
+Viewport:
+
+- `390 x 844`
+
+Observed:
+
+- Runtime script: `https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260613-base-flow-closure-b`.
+- `data-a-site-v2-schema`: `2.4.0`.
+- `data-a-site-v2-version`: `v2-phase5-immersive-simulation-20260607`.
+- Homepage rendered with `开启新的人生档案`, `读取外部存档`, and `V2调试`.
+- Local screenshot: `output/playwright/a_site_mobile_closure_b_390x844_20260613.png`.
+
+Observed limitation:
+
+- Before the placeholder API verify guard, this clean mobile-size load emitted six `401` chat-completion requests caused by placeholder API verification.
+- The guard was added after this observation; `base-flow-closure-c` must be published and rechecked before considering simulated mobile load clean.
+
 ### Live GitHub Pages: ordinary event accept/export
 
 Page:
@@ -191,5 +240,6 @@ Observed limitation:
 
 The local runtime write layer and one real Chrome/GitHub Pages ordinary-event accept/export run are now verified. The following still require evidence before the whole objective can be marked complete:
 
-- Published `base-flow-closure-b` cache-busted Pages package after the goals compatibility guard.
+- Published `base-flow-closure-c` cache-busted Pages package after the placeholder API verify load guard.
+- Recheck simulated mobile load after `base-flow-closure-c` is live.
 - Physical mobile browser cache/load confirmation from the user's phone.
