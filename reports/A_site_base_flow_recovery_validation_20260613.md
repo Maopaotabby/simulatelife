@@ -27,6 +27,18 @@ Reason: accepting a state diff with `actualElapsedDaysSuggestion` must advance f
 
 Reason: a stale/default runtime cache could previously pollute ordinary story event `eventDate` / `eventYearText`.
 
+### 4. Goals patch compatibility guard
+
+`applyGoalPatchValue()` now accepts the real model shape `value = {summary, status}` for `module = goals` patches:
+
+- `status = active/open/pending/...` adds the summary as a short-term goal only when an empty short-term slot exists.
+- `status = completed/done/achieved/...` records the summary as completed.
+- Existing short-term goals are not replaced automatically when all three slots are full.
+
+The post-accept extraction prompt now also instructs `STORYTELLER_DATA` to use the old structure `{modifyGoals:{add/remove/achieve/setLongTerm}, achievedGoals:[]}` instead of `{summary,status}` for goals.
+
+Reason: the live Pages run produced a selected accepted `goals` patch with `{summary,status}`, which was recorded in `stateDiffHistory` but did not change `player.goals`.
+
 ## Validation
 
 ### Static
@@ -110,12 +122,74 @@ Expected and observed:
 
 Result: passed.
 
+### VM: goals summary/status patch compatibility
+
+Scenario:
+
+- Apply `module = goals` patch value `{summary:"C", status:"active"}` to a profile with two short-term goals.
+- Apply `{summary:"D", status:"active"}` to a profile with three short-term goals.
+- Apply `{summary:"午餐预约", status:"completed"}` to a profile with two short-term goals.
+
+Expected and observed:
+
+- Active summary with one empty slot is added to `shortTerm`.
+- Active summary does not replace existing goals when all three slots are already full.
+- Completed summary is written into `completed`.
+
+Result: passed.
+
+### Live GitHub Pages: ordinary event accept/export
+
+Page:
+
+- `https://maopaotabby.github.io/simulatelife/index.html?v=20260613-base-flow-closure-a`
+
+Imported save:
+
+- `save_林墨_full_2026-06-12_v2(1).json`
+
+Flow executed in Chrome:
+
+1. Import save.
+2. Select `普通事件`.
+3. Click `执行`.
+4. Select the first default fate choice.
+5. Click `接受结果并继续`.
+6. Wait for final text.
+7. Click `接受命运并成长`.
+8. Export `完整存档`.
+
+Exported save:
+
+- `C:\Users\15164\Downloads\save_林墨_full_2026-06-13_v2.json`
+
+Expected and observed:
+
+- `currentYear`: `公历2023年9月1日` -> `公历2023年9月2日`.
+- `calendarState.currentDate`: `2023-09-01` -> `2023-09-02`.
+- `calendarState.elapsedDays`: `1` -> `2`.
+- `age`: `17岁` -> `17岁`.
+- `eventCount`: `19` -> `20`.
+- `history`: `19` -> `20`.
+- `canonHistory`: `18` -> `19`.
+- Latest `history.id`: `event_mqcz3uf6_2skten`.
+- Latest `canonHistory.id`: `event_mqcz3uf6_2skten`.
+- Latest `stateDiffHistory.status`: `accepted`.
+- Latest `stateDiffHistory.sourceAgent`: `STORYTELLER_DATA`.
+- Latest `stateDiffHistory.sourceEventId` matches latest history `stateDiffId`.
+- `pendingAcceptedEvents`: `0`.
+- `pendingStateDiffs`: `0`.
+- `attributes`, `tags`, `npcs`, and `goals` were preserved in the exported save.
+
+Observed limitation:
+
+- The real model output included `module = goals`, `operation = update`, `value = {summary:"前往陆家嘴赴沈知微的午餐预约（12:30）", status:"active"}`.
+- Because the old `player.goals.shortTerm` already had three entries, the patched compatibility rule will not replace an existing goal automatically.
+- No real attributes/tags/npcs change was proposed by that event, so the live export verifies preservation plus stateDiff settlement, while the VM write-layer test verifies direct attribute/tag/npc/goal mutation.
+
 ## Remaining External Validation
 
-The local runtime write layer is now verified. The following still require live browser/API or user-device evidence before the whole objective can be marked complete:
+The local runtime write layer and one real Chrome/GitHub Pages ordinary-event accept/export run are now verified. The following still require evidence before the whole objective can be marked complete:
 
-- A real model-generated ordinary event on GitHub Pages.
-- A real click on `接受命运并成长` with the user's configured API/session.
-- A real exported save after that click.
+- Published `base-flow-closure-b` cache-busted Pages package after the goals compatibility guard.
 - Physical mobile browser cache/load confirmation from the user's phone.
-

@@ -4948,6 +4948,31 @@
     var goals = normalizeGoalsState(currentGoals);
     var source = isObject(value) ? value : {};
     var changes = Array.isArray(value) ? value : ensureArray(source.modifyGoals || source.proposedChanges);
+    var summaryGoalText = trimText(source.summary || source.goal || source.text || source.title || source.name || source.description);
+    var summaryGoalStatus = trimText(source.status || source.state || source.phase);
+    if (
+      summaryGoalText &&
+      !source.modifyGoals &&
+      !source.proposedChanges &&
+      !Array.isArray(source.shortTerm) &&
+      source.longTerm === undefined &&
+      source.completed === undefined
+    ) {
+      var summaryStatusLower = summaryGoalStatus.toLowerCase();
+      var isCompletedSummaryGoal = /completed|complete|done|achieved|resolved|finished|已完成|完成|达成/.test(summaryStatusLower);
+      var isActiveSummaryGoal = !summaryStatusLower || /active|open|pending|todo|ongoing|进行中|待办|当前|未完成/.test(summaryStatusLower);
+      if (isCompletedSummaryGoal) {
+        applyAchievedGoal(goals, summaryGoalText, ageText);
+        if (!goals.completed.some(function(item){ return trimText(item && item.text || item) === summaryGoalText; })) {
+          goals.completed.push({text: summaryGoalText, achievedAge: trimText(ageText), type: "shortTerm"});
+        }
+      } else if (isActiveSummaryGoal) {
+        var alreadyTracked = goals.shortTerm.some(function(item){ return trimText(item) === summaryGoalText; }) ||
+          goals.completed.some(function(item){ return trimText(item && item.text || item) === summaryGoalText; }) ||
+          trimText(goals.longTerm) === summaryGoalText;
+        if (!alreadyTracked && goals.shortTerm.length < 3) goals.shortTerm.push(summaryGoalText);
+      }
+    }
     if (isObject(source.modifyGoals) && !Array.isArray(source.modifyGoals)) {
       var pendingGoalAdds = [];
       var pendingLongTerm = "";
@@ -5937,7 +5962,8 @@
     if (agentName === "STORYTELLER_DATA") {
       schemaText.push(
         "兼容旧站状态结算：若已接受正文或 legacyEventContext 中明确出现属性增量、newTags、removedTags、newNPCs、updatedNPCs、modifyGoals、achievedGoals、inspirationGained/awardInspiration、isDead，请直接输出对应 proposedPatches。",
-        "映射要求：statChanges -> module=attributes operation=update；newTags/removedTags -> module=tags；newNPCs/updatedNPCs -> module=npcs；modifyGoals/achievedGoals -> module=goals；inspirationGained/awardInspiration -> module=inspirationPoints；isDead -> module=isAlive value=false。"
+        "映射要求：statChanges -> module=attributes operation=update；newTags/removedTags -> module=tags；newNPCs/updatedNPCs -> module=npcs；modifyGoals/achievedGoals -> module=goals；inspirationGained/awardInspiration -> module=inspirationPoints；isDead -> module=isAlive value=false。",
+        "goals patch 的 value 必须使用旧结构 {modifyGoals:{add/remove/achieve/setLongTerm}, achievedGoals:[]}；不要输出 {summary,status} 这种摘要型 goals value。"
       );
     }
     schemaText = schemaText.join("\n");
