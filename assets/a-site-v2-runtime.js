@@ -6849,8 +6849,9 @@
     var event = isObject(storyEvent) ? storyEvent : {};
     var pendingDiffs = [];
     var extractionMode = getEffectiveExtractionMode(normalized);
-    // Explicit legacy settlement is handled during applyAcceptedEventSettlement.
-    // Do not upgrade light/off scenes to model extraction here; that made the accept button wait on STORYTELLER_DATA.
+    if (opts.forceLegacyStateSettlement === true && (extractionMode === "light" || extractionMode === "off")) {
+      extractionMode = "standard";
+    }
     if (extractionMode === "off") {
       var textOnly = await enqueuePostAcceptanceDiffForEvent(normalized, event, buildTextAcceptanceOnlyDiff(event, "off"), {alreadyNormalized:true});
       normalized = textOnly.player && textOnly.player !== normalized ? normalizePlayer(textOnly.player) : normalized;
@@ -6951,6 +6952,12 @@
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
     if (opts.skipModelExtraction === true) {
+      return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
+    }
+    var existingEventDiffs = pendingDiffsForProfile(next).filter(function(diff){
+      return diff && diff.status === "pending" && diff.sourceEventId === eventId;
+    });
+    if (existingEventDiffs.length) {
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
     var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true, alreadyNormalized:true});
@@ -11445,10 +11452,10 @@
       var autoCommitted = false;
       if (acceptedStoryEventId && !isChainBeat) {
         stageStartedAt = runtimeNow();
-        var committed = await settleAcceptedStoryEventWithLegacyState(accepted, acceptedStoryEventId, {alreadyNormalized:true, skipModelExtraction:true});
+        var committed = await settleAcceptedStoryEventWithLegacyState(accepted, acceptedStoryEventId, {alreadyNormalized:true});
         recordAcceptChainStage(acceptChainTimings, "settleAcceptedStoryEventWithLegacyState", stageStartedAt, {
           aborted: !!(committed && committed.__asv2AbortSave),
-          modelExtractionSkipped: true
+          legacyStateSettlementRequested: true
         });
         if (committed && !committed.__asv2AbortSave) {
           accepted = committed;
