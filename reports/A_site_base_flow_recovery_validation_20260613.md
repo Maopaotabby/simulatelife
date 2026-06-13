@@ -188,7 +188,29 @@ Observed limitation:
 
 - Before the placeholder API key guard, this clean mobile-size load emitted `401` chat-completion requests caused by placeholder API verification.
 - The first narrow guard reduced the errors from six to three; the remaining three were fallback text verification (`Hi`) requests.
-- The guard was broadened after this observation; `base-flow-closure-d` must be published and rechecked before considering simulated mobile load clean.
+- The guard was broadened and published as `base-flow-closure-d`.
+
+### Playwright: simulated mobile Pages load after placeholder guard
+
+Page:
+
+- `https://maopaotabby.github.io/simulatelife/index.html?v=20260613-base-flow-closure-d-mobilecheck`
+
+Viewport:
+
+- `390 x 844`
+
+Observed:
+
+- Runtime script: `https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260613-base-flow-closure-d`.
+- `data-a-site-v2-schema`: `2.4.0`.
+- `data-a-site-v2-version`: `v2-phase5-immersive-simulation-20260607`.
+- Homepage rendered with `开启新的人生档案`, `读取外部存档`, and `V2调试`.
+- Console errors: `0`.
+- Non-static network requests: none reported by Playwright CLI.
+- Local screenshot: `output/playwright/a_site_mobile_closure_d_390x844_20260613.png`.
+
+Result: passed.
 
 ### Live GitHub Pages: ordinary event accept/export
 
@@ -244,5 +266,4 @@ Observed limitation:
 The local runtime write layer and one real Chrome/GitHub Pages ordinary-event accept/export run are now verified. The following still require evidence before the whole objective can be marked complete:
 
 - Published `base-flow-closure-d` cache-busted Pages package after the placeholder API key load guard.
-- Recheck simulated mobile load after `base-flow-closure-d` is live.
 - Physical mobile browser cache/load confirmation from the user's phone.
