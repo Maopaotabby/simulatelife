@@ -1462,8 +1462,99 @@
     return next;
   }
 
+  var CONSUMED_PROMPT_COMPACTION_GUARD_VERSION = 1;
+  var CONSUMED_PROMPT_PROFILE_FIELDS = ["history","canonHistory","draftHistory","pendingAcceptedEvents","stateDiffHistory","pendingStateDiffs"];
+
+  function hasConsumedPromptFieldCandidate(value, depth){
+    if (!isObject(value) && !Array.isArray(value)) return false;
+    if (depth > 5) return false;
+    if (Array.isArray(value)) {
+      return value.some(function(item){ return hasConsumedPromptFieldCandidate(item, depth + 1); });
+    }
+    if (["selectedKeyword","customThemeText","theme","directorText"].some(function(field){
+      return typeof value[field] === "string" && looksLikeSingleUsePromptText(value[field]);
+    })) {
+      return true;
+    }
+    return ["legacyEventPayload","sourceStoryEvent","rawModelOutput"].some(function(field){
+      return (isObject(value[field]) || Array.isArray(value[field])) && hasConsumedPromptFieldCandidate(value[field], depth + 1);
+    });
+  }
+
+  function consumedPromptEntryKey(entry){
+    if (!isObject(entry)) return "";
+    return trimText(entry.id || entry.sourceEventId || entry.stateDiffId || entry.createdAt || entry.acceptedAt || entry.reviewedAt);
+  }
+
+  function consumedPromptArrayGuard(list){
+    var items = ensureArray(list);
+    var last = items.length ? items[items.length - 1] : null;
+    return {
+      length: items.length,
+      lastKey: consumedPromptEntryKey(last)
+    };
+  }
+
+  function buildConsumedPromptCompactionGuard(player){
+    var arrays = {};
+    CONSUMED_PROMPT_PROFILE_FIELDS.forEach(function(field){
+      arrays[field] = consumedPromptArrayGuard(player && player[field]);
+    });
+    return {
+      version: CONSUMED_PROMPT_COMPACTION_GUARD_VERSION,
+      clean: true,
+      arrays: arrays
+    };
+  }
+
+  function consumedPromptGuardScanStart(list, guard){
+    var items = ensureArray(list);
+    if (!isObject(guard)) return 0;
+    var guardedLength = Math.max(0, Math.floor(Number(guard.length) || 0));
+    if (guardedLength === 0) return 0;
+    if (guardedLength > items.length) return 0;
+    var guardedKey = trimText(guard.lastKey);
+    if (!guardedKey) return 0;
+    var guardedEntry = items[guardedLength - 1];
+    if (consumedPromptEntryKey(guardedEntry) !== guardedKey) return 0;
+    return guardedLength;
+  }
+
+  function consumedPromptCompactionScanInfo(player){
+    var info = {needsCompaction:false, guardCurrent:false, scanStarts:{}};
+    if (!isObject(player)) return info;
+    var guard = isObject(player.__asv2ConsumedPromptCompactionGuard) ? player.__asv2ConsumedPromptCompactionGuard : null;
+    var guardArrays = guard && guard.version === CONSUMED_PROMPT_COMPACTION_GUARD_VERSION && guard.clean === true && isObject(guard.arrays) ? guard.arrays : null;
+    info.guardCurrent = !!guardArrays && CONSUMED_PROMPT_PROFILE_FIELDS.every(function(field){
+      var current = consumedPromptArrayGuard(player[field]);
+      var previous = guardArrays[field];
+      return isObject(previous) && Number(previous.length || 0) === current.length && trimText(previous.lastKey) === current.lastKey;
+    });
+    if (info.guardCurrent) return info;
+    CONSUMED_PROMPT_PROFILE_FIELDS.some(function(field){
+      var items = ensureArray(player[field]);
+      var start = guardArrays ? consumedPromptGuardScanStart(items, guardArrays[field]) : 0;
+      info.scanStarts[field] = start;
+      for (var i = start; i < items.length; i += 1) {
+        if (hasConsumedPromptFieldCandidate(items[i], 0)) {
+          info.needsCompaction = true;
+          return true;
+        }
+      }
+      return false;
+    });
+    return info;
+  }
+
   function compactConsumedPromptFieldsForProfile(player){
     if (!isObject(player)) return player;
+    var scanInfo = consumedPromptCompactionScanInfo(player);
+    if (!scanInfo.needsCompaction) {
+      if (scanInfo.guardCurrent) return player;
+      var guarded = Object.assign({}, player);
+      guarded.__asv2ConsumedPromptCompactionGuard = buildConsumedPromptCompactionGuard(player);
+      return guarded;
+    }
     var next = Object.assign({}, player);
     ["history","canonHistory","draftHistory","pendingAcceptedEvents"].forEach(function(field){
       next[field] = ensureArray(next[field]).map(function(item){ return compactConsumedPromptFields(item, 0); });
@@ -1471,6 +1562,7 @@
     ["stateDiffHistory","pendingStateDiffs"].forEach(function(field){
       next[field] = ensureArray(next[field]).map(function(item){ return compactConsumedPromptFields(item, 0); });
     });
+    next.__asv2ConsumedPromptCompactionGuard = buildConsumedPromptCompactionGuard(next);
     return next;
   }
 
