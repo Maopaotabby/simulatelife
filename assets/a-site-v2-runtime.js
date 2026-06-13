@@ -3219,10 +3219,31 @@
       text.indexOf("null") >= 0;
   }
 
-  function isPlaceholderApiVerificationRequest(input, init, payload){
-    if (!payload || !shouldSkipPromptPatch(payload)) return false;
+  function readFetchUrl(input){
+    if (typeof input === "string") return input;
+    if (input && typeof input.url === "string") return input.url;
+    return "";
+  }
+
+  function isChatCompletionsRequest(input){
+    return /\/chat\/completions(?:\?|$)/i.test(readFetchUrl(input));
+  }
+
+  function isPlaceholderChatCompletionRequest(input, init){
+    if (!isChatCompletionsRequest(input)) return false;
     var headers = init && init.headers || input && input.headers;
     return isPlaceholderAuthorization(readFetchHeader(headers, "authorization"));
+  }
+
+  function makePlaceholderApiResponse(){
+    return new Response(JSON.stringify({
+      error: {
+        message: "A-site public build placeholder API key; request was skipped locally."
+      },
+      aSiteV2: {
+        blockedReason: "placeholder_api_key_blocked"
+      }
+    }), {status:401, headers:{"Content-Type":"application/json"}});
   }
 
   function safeParseJsonText(text){
@@ -8320,6 +8341,15 @@
       var agentName = "UNKNOWN";
       var originalAgentName = "UNKNOWN";
       var patchedHasPostAcceptMarker = false;
+      if (isPlaceholderChatCompletionRequest(input, init)) {
+        pushFetchPatchAudit({
+          originalAgentName: "SKIPPED_PLACEHOLDER_API",
+          patched: false,
+          blocked: true,
+          reason: "placeholderApiKeyBlocked"
+        });
+        return makePlaceholderApiResponse();
+      }
       try {
         var body = init && typeof init.body === "string" ? init.body : "";
         if (body) {
@@ -8330,22 +8360,6 @@
               patched: false,
               reason: "shouldSkipPromptPatch"
             });
-            if (isPlaceholderApiVerificationRequest(input, init, payload)) {
-              pushFetchPatchAudit({
-                originalAgentName: "SKIPPED_VERIFY",
-                patched: false,
-                blocked: true,
-                reason: "placeholderApiVerifyBlocked"
-              });
-              return new Response(JSON.stringify({
-                error: {
-                  message: "A-site public build placeholder API key; verification request was skipped locally."
-                },
-                aSiteV2: {
-                  blockedReason: "placeholder_api_verify_blocked"
-                }
-              }), {status:401, headers:{"Content-Type":"application/json"}});
-            }
           } else {
             if (Array.isArray(payload.messages)) {
               originalRequestText = messagesToPromptText(payload.messages);

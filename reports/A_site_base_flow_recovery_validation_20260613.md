@@ -41,13 +41,14 @@ Reason: the live Pages run produced a selected accepted `goals` patch with `{sum
 
 ### 5. Placeholder API verify load guard
 
-`patchFetch()` now intercepts only API verification requests when the public build placeholder key is being used:
+`patchFetch()` now intercepts chat-completion requests when the public build placeholder key is being used:
 
-- Matches `API_VERIFY` / `Respond with JSON: {"test": true}` verification prompts.
 - Blocks only empty/placeholder authorization such as `PUBLIC_BUILD_API_KEY_REMOVED`.
-- Real API keys and non-verification story requests continue to pass through.
+- Applies to both JSON verification and fallback text verification (`Hi`) requests.
+- Real API keys continue to pass through.
+- Static assets and non-chat-completion requests are not blocked.
 
-Reason: a clean mobile-size Pages load was otherwise issuing six network `401` requests to chat-completion endpoints with `Bearer PUBLIC_BUILD_API_KEY_REMOVED`, polluting load verification and slowing the page.
+Reason: a clean mobile-size Pages load was otherwise issuing network `401` requests to chat-completion endpoints with `Bearer PUBLIC_BUILD_API_KEY_REMOVED`, polluting load verification and slowing the page.
 
 ## Validation
 
@@ -148,19 +149,20 @@ Expected and observed:
 
 Result: passed.
 
-### VM: placeholder API verification guard
+### VM: placeholder API key chat-completion guard
 
 Scenario:
 
-- Verification payload with `Authorization: Bearer PUBLIC_BUILD_API_KEY_REMOVED`.
-- Same verification payload with `Authorization: Bearer sk-real`.
-- Non-verification story payload with placeholder authorization.
+- `/chat/completions` request with `Authorization: Bearer PUBLIC_BUILD_API_KEY_REMOVED`.
+- `/chat/completions` request using a `Headers` object with the same placeholder key.
+- `/chat/completions` request with `Authorization: Bearer sk-real`.
+- Static asset request with placeholder authorization.
 
 Expected and observed:
 
-- Placeholder verification is blocked locally.
-- Real-key verification is not blocked.
-- Non-verification story payload is not blocked by this guard.
+- Placeholder chat-completion requests are blocked locally.
+- Real-key chat-completion requests are not blocked.
+- Static asset requests are not blocked.
 
 Result: passed.
 
@@ -184,8 +186,9 @@ Observed:
 
 Observed limitation:
 
-- Before the placeholder API verify guard, this clean mobile-size load emitted six `401` chat-completion requests caused by placeholder API verification.
-- The guard was added after this observation; `base-flow-closure-c` must be published and rechecked before considering simulated mobile load clean.
+- Before the placeholder API key guard, this clean mobile-size load emitted `401` chat-completion requests caused by placeholder API verification.
+- The first narrow guard reduced the errors from six to three; the remaining three were fallback text verification (`Hi`) requests.
+- The guard was broadened after this observation; `base-flow-closure-d` must be published and rechecked before considering simulated mobile load clean.
 
 ### Live GitHub Pages: ordinary event accept/export
 
@@ -240,6 +243,6 @@ Observed limitation:
 
 The local runtime write layer and one real Chrome/GitHub Pages ordinary-event accept/export run are now verified. The following still require evidence before the whole objective can be marked complete:
 
-- Published `base-flow-closure-c` cache-busted Pages package after the placeholder API verify load guard.
-- Recheck simulated mobile load after `base-flow-closure-c` is live.
+- Published `base-flow-closure-d` cache-busted Pages package after the placeholder API key load guard.
+- Recheck simulated mobile load after `base-flow-closure-d` is live.
 - Physical mobile browser cache/load confirmation from the user's phone.
