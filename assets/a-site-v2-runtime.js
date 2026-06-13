@@ -498,6 +498,42 @@
     return next;
   }
 
+  function isFreshInlineTimeJumpContext(ctx){
+    if (!isObject(ctx) || !trimText(ctx.newDate)) return false;
+    var created = Date.parse(ctx.createdAt || "");
+    if (!Number.isFinite(created)) return false;
+    return Date.now() - created <= 30 * 60 * 1000;
+  }
+
+  function getInlineTimeJumpContextForStoryBuild(player){
+    var recent = getRecentInlineTimeJumpContext();
+    if (recent) return recent;
+    var pending = isObject(player && player.pendingInlineTimeJumpContext) ? player.pendingInlineTimeJumpContext : null;
+    return isFreshInlineTimeJumpContext(pending) ? pending : null;
+  }
+
+  function clearConsumedInlineTimeJumpContext(player, storyEvent){
+    var next = player || {};
+    var eventCtx = isObject(storyEvent && storyEvent.inlineTimeJumpContext) ? storyEvent.inlineTimeJumpContext : null;
+    var currentCtx = isObject(next.pendingInlineTimeJumpContext) ? next.pendingInlineTimeJumpContext : null;
+    var shouldClearProfileContext = !!currentCtx && (
+      !eventCtx ||
+      !trimText(currentCtx.createdAt) ||
+      !trimText(eventCtx.createdAt) ||
+      trimText(currentCtx.createdAt) === trimText(eventCtx.createdAt) ||
+      trimText(currentCtx.newDate) === trimText(eventCtx.newDate)
+    );
+    if (shouldClearProfileContext) next.pendingInlineTimeJumpContext = null;
+    if (lastInlineTimeJumpContext) {
+      var shouldClearRecentContext = !eventCtx ||
+        !trimText(eventCtx.createdAt) ||
+        trimText(lastInlineTimeJumpContext.createdAt) === trimText(eventCtx.createdAt) ||
+        trimText(lastInlineTimeJumpContext.newDate) === trimText(eventCtx.newDate);
+      if (shouldClearRecentContext) lastInlineTimeJumpContext = null;
+    }
+    return next;
+  }
+
   function parseLegacyDaysFromAgeText(text){
     var value = trimText(text);
     if (!value) return null;
@@ -5429,7 +5465,7 @@
     var eventId = trimText(source.v2StoryEventId || source.id) || makeId("event");
     var action = source.selectedOption && source.selectedOption.text || source.action || source.playerAction || "";
     var status = trimText(source.v2Status || source.status) || "accepted_text_pending_state";
-    var inlineTimeContext = getRecentInlineTimeJumpContext();
+    var inlineTimeContext = getInlineTimeJumpContextForStoryBuild(normalized);
     var preferV2Timeline = !!inlineTimeContext || !!cachedTimeline;
     var rawEventYear = trimText(source.eventYear || source.year);
     var eventYearText = inlineTimeContext && inlineTimeContext.targetYearText ? inlineTimeContext.targetYearText : (preferV2Timeline && timelineProfile.currentYear ? timelineProfile.currentYear : (extractCalendarYearNumber(rawEventYear) !== null ? rawEventYear : timelineProfile.currentYear));
@@ -6489,6 +6525,20 @@
     return normalizePlayer(next);
   }
 
+  function storyEventRequestsNarrativeChainBeat(player, storyEvent){
+    var chain = getOpenNarrativeChain(player);
+    if (!chain || chain.status !== "open" || !isObject(storyEvent) || storyEvent.isChainClosure === true) return false;
+    var legacy = isObject(storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
+    var inlineContext = isObject(storyEvent.inlineTimeJumpContext) ? storyEvent.inlineTimeJumpContext : (
+      isObject(legacy.inlineTimeJumpContext) ? legacy.inlineTimeJumpContext : null
+    );
+    var status = trimText(storyEvent.v2Status || storyEvent.status || legacy.v2Status || legacy.status);
+    var sourceChainId = trimText(storyEvent.sourceChainId || legacy.sourceChainId);
+    var generationMode = trimText(storyEvent.generationMode || legacy.generationMode || inlineContext && inlineContext.generationMode);
+    if (status === "chain_beat" || sourceChainId) return true;
+    return generationMode === "chain_continue" || generationMode === "result_stage_chain_continue";
+  }
+
   function buildNarrativeChainClosureSummary(chain){
     var normalized = normalizeNarrativeChain(chain || {}, {});
     var beats = ensureArray(normalized.currentSceneTranscript);
@@ -7045,8 +7095,7 @@
       acceptedAt: new Date().toISOString(),
       extractionStatus: opts.skipPostAcceptanceExtraction ? "deferred_optional_debug" : "scheduled"
     });
-    var activeChain = getOpenNarrativeChain(normalized);
-    if (activeChain && activeChain.status === "open" && storyEvent.isChainClosure !== true) {
+    if (storyEventRequestsNarrativeChainBeat(normalized, storyEvent)) {
       return appendStoryEventToActiveChain(normalized, storyEvent);
     }
     normalized.draftHistory = ensureArray(normalized.draftHistory).filter(function(event){ return !isObject(event) || event.id !== id; }).concat([storyEvent]);
@@ -7313,6 +7362,7 @@
     next.canonHistory = ensureArray(next.canonHistory).filter(function(entry){ return !isObject(entry) || entry.id !== storyEvent.id; }).concat([storyEvent]);
     next.eventCount = Math.max(Number(next.eventCount || 0), ensureArray(next.history).filter(function(entry){ return !entry.status || entry.status === "accepted" || entry.status === "canon"; }).length);
     next = clearProfilePendingEventQueues(next, sourceEventId, storyEvent, {alreadyCloned:true});
+    next = clearConsumedInlineTimeJumpContext(next, storyEvent);
     removePendingTextEventsMatching(storyEvent);
     if (storyEvent.sourceChainId) {
       next = markNarrativeChainCommitted(next, storyEvent.sourceChainId, storyEvent.id);
