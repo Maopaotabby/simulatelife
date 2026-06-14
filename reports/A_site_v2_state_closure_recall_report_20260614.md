@@ -166,16 +166,71 @@ node reports/run_v2_state_closure_regression.js
 - prompt 构造包含 `[PERSISTENT_STATE_RECALL]`
 - 未对旧存档做自动补正；历史缺失仍需单独存档回填
 
+## Publish Verification
+
+提交：
+
+```text
+6bae549 Restore V2 state recall in event prompts
+```
+
+推送：
+
+```text
+origin/main bc38e6d..6bae549
+```
+
+Raw GitHub 验证：
+
+```text
+https://raw.githubusercontent.com/Maopaotabby/simulatelife/main/index.html
+https://raw.githubusercontent.com/Maopaotabby/simulatelife/main/assets/a-site-v2-runtime.js
+```
+
+结果：
+
+- raw `index.html` 包含 `20260614-v2-state-closure-recall-a`
+- raw runtime 包含 `v2-state-closure-recall-20260614`
+- raw runtime 包含 `PERSISTENT_STATE_RECALL`
+
+GitHub Pages 验证：
+
+```text
+https://maopaotabby.github.io/simulatelife/?cb=<timestamp>
+https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-recall-a&cb=<timestamp>
+```
+
+结果：
+
+- Pages `index.html` 返回 `200`
+- Pages `index.html` 包含新 runtime query
+- Pages runtime 返回 `200`
+- Pages runtime 包含 `v2-state-closure-recall-20260614`
+- Pages runtime 包含 `PERSISTENT_STATE_RECALL`
+- Chrome 中旧标签页原本仍加载旧 query，刷新到 `?v=20260614-v2-state-closure-recall-a` 后已加载新 runtime query
+
+Pages 移动视口回归：
+
+```text
+A_SITE_URL=https://maopaotabby.github.io/simulatelife/index.html node reports/run_v2_state_closure_regression.js
+```
+
+结果：
+
+- 回归通过
+- `reports/phase5_full_acceptance_evidence/v2_state_closure_regression_results.json` 中脚本来源已变为 `https://maopaotabby.github.io/simulatelife/...`
+- Pages 包上的 `interceptLegacyAccept -> runPostAcceptanceExtraction -> applyAcceptedEventSettlement -> saveProfile -> getLatestProfile -> next prompt` 仍通过
+
 ## Remaining Risk
 
-本轮浏览器回归使用 stubbed DATA / ARCHIVIST，证明 runtime 闭环和 prompt 读取已通，但还没有用真实外部 API 重新生成一轮新普通事件并导出正式存档。
+本轮浏览器回归使用 stubbed DATA / ARCHIVIST，证明 runtime 闭环、Pages 包加载和 prompt 读取已通，但还没有用真实外部 API 重新生成一轮新普通事件并导出正式存档。
 
-发布后仍需要继续完成：
+仍需要继续完成：
 
 - 真实页面普通事件生成
 - 点击“接受命运并成长”
 - 导出存档
 - 重新导入
-- 手机端 Pages 流程确认
+- 实体手机端流程确认
 
 这些属于目标后续验收，不应把本轮本地 stub 结果当作完整最终验收。
