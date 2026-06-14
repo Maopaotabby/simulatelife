@@ -3,8 +3,8 @@
   "runtimeVersion": "v2-state-closure-archive-20260614",
   "scripts": [
     "https://cdn.tailwindcss.com/",
-    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-archive-a",
-    "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+    "https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-archive-a",
+    "https://maopaotabby.github.io/simulatelife/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
   ],
   "beliefOnly": {
     "npcNames": [
@@ -93,14 +93,14 @@
           "summary": "递给林墨一颗牛奶糖。",
           "sourceEventId": "event_accept_stub",
           "weight": 0.7,
-          "id": "interaction_mqd68yar_klx23t",
+          "id": "interaction_mqd6pio6_tak2ve",
           "pinned": false,
-          "createdAt": "2026-06-14T02:35:06.531Z"
+          "createdAt": "2026-06-14T02:47:59.430Z"
         }
       ],
       "visibility": "limited_public",
       "confidence": "confirmed",
-      "lastUpdated": "2026-06-14T02:35:06.531Z"
+      "lastUpdated": "2026-06-14T02:47:59.430Z"
     },
     "relationshipNames": [
       "Emma",
