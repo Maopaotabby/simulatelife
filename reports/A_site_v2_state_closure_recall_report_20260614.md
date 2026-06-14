@@ -166,6 +166,20 @@ node reports/run_v2_state_closure_regression.js
 - prompt 构造包含 `[PERSISTENT_STATE_RECALL]`
 - 未对旧存档做自动补正；历史缺失仍需单独存档回填
 
+导出存档验收脚本：
+
+```text
+node reports/validate_v2_closure_export.js --save <after-export.json> --baseline <before-export.json> --strict-deltas
+```
+
+用途：
+
+- 只读校验导出的 A 网站存档，不修改存档、浏览器存储或调用外部 API
+- 检查 `history / canonHistory / date / age / eventCount / attributes / tags / npcs / goals`
+- 检查 `npcProfiles / relationshipStates / openThreads / loreEntries / sceneMemoryArchive`
+- 检查 pending queues 是否清空，以及是否仍出现“未命名认知”
+- 可加载 runtime 构造下一轮 `STORYTELLER / PLANNER` prompt，确认 `[PERSISTENT_STATE_RECALL]` 与已落盘状态进入 prompt
+
 ## Publish Verification
 
 提交：
