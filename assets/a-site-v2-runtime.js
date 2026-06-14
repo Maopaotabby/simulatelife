@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-phase5-state-extraction-repair-20260614";
+  var APP_PATCH_VERSION = "v2-phase5-live-state-views-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -5568,6 +5568,7 @@
     var after = applyNpcBelief(withNpc, belief, sourceEventId);
     after = appendPatchHistory(after, before, after, {module:"npcs", operation:"add", sourceEventId:sourceEventId}, stateDiff);
     after = appendPatchHistory(after, before, after, {module:"npcProfiles", operation:"update", sourceEventId:sourceEventId}, stateDiff);
+    after = appendPatchHistory(after, before, after, {module:"sceneState", operation:"update", sourceEventId:sourceEventId}, stateDiff);
     return appendPatchHistory(after, before, after, {module:"relationshipStates", operation:"add", sourceEventId:sourceEventId}, stateDiff);
   }
 
@@ -5927,15 +5928,47 @@
       sceneId: scene.sceneId || scene.currentSceneId || "",
       sceneMode: scene.sceneMode || "",
       status: scene.status || "",
+      locationId: scene.currentLocationId || scene.locationId || "",
       currentLocationText: scene.currentLocationText || scene.locationName || "",
       currentAction: scene.currentAction || "",
       focus: scene.focus || "",
       mood: scene.mood || "",
       tensionLevel: scene.tensionLevel || "",
       beatPhase: scene.beatPhase || "",
+      sceneGoal: scene.sceneGoal || scene.objective || "",
+      sceneConstraints: scene.sceneConstraints || "",
+      timeBudgetText: scene.timeBudgetText || "",
       sceneEndReason: scene.sceneEndReason || "",
-      activeNpcIds: ensureArray(scene.activeNpcIds).slice(0, 8)
+      activeNpcIds: ensureArray(scene.activeNpcIds).slice(0, 8),
+      presentCharacters: ensureArray(scene.presentCharacters).slice(0, 8),
+      interactableObjects: ensureArray(scene.interactableObjects).slice(0, 8)
     };
+  }
+
+  function compactExtractionNpcProfiles(profiles){
+    var entries = [];
+    if (Array.isArray(profiles)) {
+      entries = profiles;
+    } else if (isObject(profiles)) {
+      entries = Object.keys(profiles).map(function(key){ return Object.assign({id:key}, profiles[key]); });
+    }
+    return entries.map(function(profile){
+      var normalized = normalizeNpcProfile(profile, profile && profile.id);
+      return {
+        id: normalized.id,
+        name: normalized.name,
+        publicSummary: truncateText(normalized.publicSummary, 260),
+        protagonistKnown: truncateText(normalized.protagonistKnown, 260),
+        authorOnly: truncateText(normalized.authorOnly, 260),
+        attitude: truncateText(normalized.attitude, 160),
+        knows: ensureArray(normalized.knows).slice(-6),
+        falseBeliefs: ensureArray(normalized.falseBeliefs).slice(-6),
+        recentInteractions: ensureArray(normalized.recentInteractions).map(function(item){ return truncateText(item.summary, 220); }).filter(Boolean).slice(-4),
+        visibility: normalized.visibility,
+        status: normalized.status,
+        sourceEventId: normalized.sourceEventId
+      };
+    }).filter(function(profile){ return profile.name || profile.id; }).slice(0, 12);
   }
 
   function compactExtractionSceneControl(player){
@@ -6002,8 +6035,11 @@
       "属性：" + truncateText(JSON.stringify(ensureArray(normalized.attributes).map(function(item){ return {name:item && item.name, value:item && item.value}; })), 420),
       "标签：" + summarizeEntries(normalized.tags, 12),
       "NPC名单：" + summarizeEntries(normalized.npcs, 12),
+      "NPC档案卡：" + truncateText(JSON.stringify(compactExtractionNpcProfiles(normalized.npcProfiles)), 1400),
       "目标：" + truncateText(JSON.stringify(normalized.goals || {}), 520),
       "位置/活动范围：" + truncateText(JSON.stringify(normalized.locationState || {}), 360),
+      "当前镜头：" + truncateText(JSON.stringify(compactExtractionSceneState(normalized.sceneState)), 900),
+      "短期场景记忆：" + truncateText(JSON.stringify(compactExtractionSceneMemory(normalized.shortTermSceneMemory)), 900),
       "",
       "【状态提取防污染规则】",
       "STORYTELLER_DATA 输出 confirmedFacts、speculations、npcBeliefs、rejectedOrUnconfirmed、proposedPatches、actualElapsedDaysSuggestion。",
@@ -6089,6 +6125,7 @@
       sceneControl: compactExtractionSceneControl(normalized),
       sceneState: compactExtractionSceneState(normalized.sceneState),
       shortTermSceneMemory: compactExtractionSceneMemory(normalized.shortTermSceneMemory),
+      npcProfiles: compactExtractionNpcProfiles(normalized.npcProfiles),
       nextGranularitySuggestions: ensureArray(normalized.nextGranularitySuggestions).slice(0, 3)
     };
     var schemaText = [
@@ -6109,6 +6146,10 @@
       schemaText.push(
         "必须检查 acceptedText 相对当前属性、标签、NPC名单和目标是否产生明确变化；若有明确变化，输出最小 proposedPatches，不要只写 confirmedFacts。",
         "NPC首次实际登场或与主角发生可延续互动时，使用 module=npcs add/update；关系认知、误会和主观看法放入 npcBeliefs。",
+        "如果 acceptedText 明确改变当前地点、当前动作、镜头焦点、情绪氛围、紧张度、在场人物、可交互物、场景约束或场景目标，输出 module=sceneState operation=update 的 patch。",
+        "如果 acceptedText 是微动作/小场景连续推进，输出 module=shortTermSceneMemory operation=update 的 patch，保留 notes、lastActions、unresolvedMicroPrompts/unresolvedThreads；不要只让短期记忆停留为空。",
+        "如果 acceptedText 明确改变某个 NPC 对主角的态度、已知信息、误认、说话风格或最近互动，输出 module=npcProfiles operation=update 的 patch；NPC主观看法仍可同时进入 npcBeliefs。",
+        "如果 acceptedText 让主角、公众、核心同伴或作者层知识发生可追踪变化，输出 module=knowledgeLayers，并使用 path=knowledgeLayers.protagonistKnownSetting / publicKnownSetting / companionKnownSetting / npcKnowledgeRules / forbiddenPublicKnowledge。不要把作者层秘密自动公开。",
         "目标已完成、失败、被替换或出现新的短期行动目标时，使用 module=goals；不要让过期短期目标长期保留。",
         "属性/标签只在正文有明确能力、心理、资源、身份或状态变化时更新；日常小波动可用 ±1~3，重大变化才更大。",
         "兼容旧站状态结算：若已接受正文或 legacyEventContext 中明确出现属性增量、newTags、removedTags、newNPCs、updatedNPCs、modifyGoals、achievedGoals、inspirationGained/awardInspiration、isDead，请直接输出对应 proposedPatches。",
@@ -6518,20 +6559,74 @@
     return trimText(sceneState && sceneState.sceneEndReason) || "scene_goal_completed";
   }
 
+  function knownNpcSceneKeys(player){
+    var keys = [];
+    function add(value){
+      var text = trimText(value);
+      if (text && keys.indexOf(text) < 0) keys.push(text);
+    }
+    ensureArray(player && player.npcs).forEach(function(npc){
+      if (!isObject(npc)) return;
+      add(npc.id);
+      add(npc.name);
+      add(npc.originalId);
+      add(npc.originalName);
+    });
+    if (isObject(player && player.npcProfiles)) {
+      Object.keys(player.npcProfiles).forEach(function(key){
+        add(key);
+        var profile = player.npcProfiles[key];
+        if (isObject(profile)) {
+          add(profile.id);
+          add(profile.npcId);
+          add(profile.name);
+        }
+      });
+    }
+    return keys;
+  }
+
+  function detectNpcPresenceFromText(player, text){
+    var source = trimText(text);
+    if (!source) return [];
+    return knownNpcSceneKeys(player).filter(function(key){
+      return key && source.indexOf(key) >= 0;
+    }).slice(0, 8);
+  }
+
+  function mergeSceneList(current, additions, limit){
+    var next = ensureArray(current).map(trimText).filter(Boolean);
+    ensureArray(additions).map(trimText).filter(Boolean).forEach(function(item){
+      if (next.indexOf(item) < 0) next.push(item);
+    });
+    return next.slice(-(limit || 8));
+  }
+
   function updateSceneMemoryOnAcceptedText(player, storyEvent){
     var next = normalizePlayer(player || {});
     var mode = next.sceneControl.granularityPreset;
     var endReason = inferSceneEndReason(mode, storyEvent, next.sceneState);
     var suggestions = suggestNextGranularities(mode, endReason);
+    var storyText = pickStoryText(storyEvent) || stripInlineChoicePollution(storyEvent && storyEvent.storytellerText);
+    var summary = summarizeStoryForScene(storyText);
     next.sceneState.turnIndex = Math.max(0, Number(next.sceneState.turnIndex || 0)) + 1;
     next.sceneState.sceneMode = mode;
     next.sceneState.sceneEndReason = endReason;
     next.sceneState.lastUpdated = new Date().toISOString();
+    if (summary) {
+      next.sceneState.currentAction = summary;
+      if (!next.sceneState.focus) next.sceneState.focus = summary;
+      if (!next.sceneState.sceneGoal && next.sceneControl.lockCurrentScene) next.sceneState.sceneGoal = summary;
+    }
+    var detectedNpcIds = detectNpcPresenceFromText(next, storyText);
+    if (detectedNpcIds.length) {
+      next.sceneState.activeNpcIds = mergeSceneList(next.sceneState.activeNpcIds, detectedNpcIds, 8);
+      next.sceneState.presentCharacters = mergeSceneList(next.sceneState.presentCharacters, detectedNpcIds, 8);
+    }
     next.shortTermSceneMemory = decaySceneMemory(next.shortTermSceneMemory);
     next.shortTermSceneMemory.sceneId = next.sceneState.sceneId;
     next.shortTermSceneMemory.currentSceneId = next.sceneState.sceneId;
     if (mode === "micro_action" || mode === "small_scene") {
-      var summary = summarizeStoryForScene(pickStoryText(storyEvent) || stripInlineChoicePollution(storyEvent && storyEvent.storytellerText));
       if (summary) {
         next.shortTermSceneMemory.notes.push(normalizeSceneNote({
           type: mode === "micro_action" ? "micro_beat" : "small_scene_beat",
@@ -7442,6 +7537,9 @@
         sourceEventId: sourceEventId
       }, next.totalDays)]);
     }
+    next.sceneState = normalizeSceneState(next.sceneState);
+    next.sceneState.activeNpcIds = mergeSceneList(next.sceneState.activeNpcIds, [id, name], 8);
+    next.sceneState.presentCharacters = mergeSceneList(next.sceneState.presentCharacters, [id, name], 8);
     next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
     var profileId = id || name;
     var profile = next.npcProfiles[profileId] || next.npcProfiles[name] || normalizeNpcProfile({
@@ -9238,6 +9336,7 @@
     "npcProfiles",
     "retrievalLog",
     "nextGranularitySuggestions",
+    "knowledgeLayers",
     "authorOnlySetting",
     "protagonistKnownSetting",
     "publicKnownSetting"
