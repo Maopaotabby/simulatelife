@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-state-closure-archive-20260614";
+  var APP_PATCH_VERSION = "v2-edit-authority-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -322,6 +322,138 @@
       if (source && !isInvalidStoryText(source[field])) return field;
     }
     return "";
+  }
+
+  function storyEventHasUserEditAuthority(source){
+    if (!isObject(source)) return false;
+    var meta = isObject(source.storyEditMeta) ? source.storyEditMeta : {};
+    return source.userEditedStory === true ||
+      trimText(source.storyTextAuthority) === "user_edit" ||
+      meta.userEditedStory === true ||
+      trimText(meta.storyTextAuthority) === "user_edit";
+  }
+
+  function canonicalUserEditedStoryText(source){
+    var directStory = storyTextCandidate(source && source.story).trim();
+    if (!isInvalidStoryText(directStory)) return stripInlineChoicePollution(directStory);
+    return pickStoryText(source);
+  }
+
+  function sanitizeEditedStoryLegacyPayload(source, text){
+    var next = Object.assign({}, isObject(source) ? source : {});
+    ["story", "storytellerText", "storyText", "resultText", "text", "content", "result", "outcome"].forEach(function(field){
+      if (next[field] === undefined || typeof next[field] === "string") next[field] = text;
+    });
+    return next;
+  }
+
+  function canonicalizeUserEditedStoryEvent(source){
+    if (!storyEventHasUserEditAuthority(source)) return source;
+    var text = canonicalUserEditedStoryText(source);
+    if (isInvalidStoryText(text)) return source;
+    var next = sanitizeEditedStoryLegacyPayload(source, text);
+    next.userEditedStory = true;
+    next.storyTextAuthority = "user_edit";
+    next.decisionMetadataStale = true;
+    next.storyEditMeta = Object.assign({}, isObject(source.storyEditMeta) ? source.storyEditMeta : {}, {
+      userEditedStory: true,
+      storyTextAuthority: "user_edit",
+      decisionMetadataStale: true,
+      editedStoryHash: hashText(text),
+      editedStoryLength: text.length
+    });
+    return next;
+  }
+
+  function markUserEditedStoryUpdate(before, after){
+    if (!isObject(after)) return after;
+    var next = Object.assign({}, after);
+    if (storyEventHasUserEditAuthority(next)) return canonicalizeUserEditedStoryEvent(next);
+    if (!isObject(before)) return next;
+    var beforeId = trimText(before.v2StoryEventId || before.id);
+    var afterId = trimText(next.v2StoryEventId || next.id);
+    if (beforeId && afterId && beforeId !== afterId) return next;
+    var beforeText = pickDirectStoryResultText(before) || pickStoryText(before);
+    var afterStory = storyTextCandidate(next.story).trim();
+    if (isInvalidStoryText(beforeText) || isInvalidStoryText(afterStory)) return next;
+    afterStory = stripInlineChoicePollution(afterStory);
+    if (stripInlineChoicePollution(beforeText) === afterStory) return next;
+    var editedAt = new Date().toISOString();
+    var priorRevision = Math.max(0, Math.floor(Number(before.editRevision || before.storyEditMeta && before.storyEditMeta.editRevision || 0) || 0));
+    var editRevision = priorRevision + 1;
+    next.userEditedStory = true;
+    next.editedAt = editedAt;
+    next.editRevision = editRevision;
+    next.decisionMetadataStale = true;
+    next.storyTextAuthority = "user_edit";
+    next.originalStoryHash = hashText(beforeText);
+    next.originalStoryLength = beforeText.length;
+    next.editedStoryHash = hashText(afterStory);
+    next.storyEditMeta = {
+      userEditedStory: true,
+      storyTextAuthority: "user_edit",
+      decisionMetadataStale: true,
+      editedAt: editedAt,
+      editRevision: editRevision,
+      originalStoryHash: hashText(beforeText),
+      originalStoryLength: beforeText.length,
+      editedStoryHash: hashText(afterStory),
+      editedStoryLength: afterStory.length,
+      staleMetadata: ["selectedOption", "probabilityBreakdown", "rollResult", "arbiterResult"]
+    };
+    return canonicalizeUserEditedStoryEvent(next);
+  }
+
+  function wrapAiLifeSetCurrentYearEvent(setter){
+    if (typeof setter !== "function") return setter;
+    if (setter.__asv2UserEditAuthorityWrapped) return setter;
+    var wrapped = function(update){
+      var result;
+      if (typeof update === "function") {
+        result = setter(function(previous){
+          return markUserEditedStoryUpdate(previous, update(previous));
+        });
+      } else {
+        result = setter(markUserEditedStoryUpdate(null, update));
+      }
+      try { window.setTimeout(renderEditedStoryAuthorityWarning, 0); } catch (_) {}
+      return result;
+    };
+    try {
+      Object.defineProperty(wrapped, "__asv2UserEditAuthorityWrapped", {value:true});
+      Object.defineProperty(wrapped, "__asv2OriginalSetter", {value:setter});
+    } catch (_) {
+      wrapped.__asv2UserEditAuthorityWrapped = true;
+      wrapped.__asv2OriginalSetter = setter;
+    }
+    return wrapped;
+  }
+
+  function installUserEditAuthoritySetterBridge(){
+    if (typeof window === "undefined") return;
+    var descriptor = null;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(window, "__aiLifeSetCurrentYearEvent");
+    } catch (_) {}
+    if (descriptor && descriptor.get && descriptor.get.__asv2UserEditAuthorityBridge) return;
+    var current = descriptor && "value" in descriptor ? descriptor.value : window.__aiLifeSetCurrentYearEvent;
+    var getter = function(){ return current; };
+    getter.__asv2UserEditAuthorityBridge = true;
+    try {
+      Object.defineProperty(window, "__aiLifeSetCurrentYearEvent", {
+        configurable: true,
+        enumerable: true,
+        get: getter,
+        set: function(value){
+          current = wrapAiLifeSetCurrentYearEvent(value);
+        }
+      });
+      if (typeof current === "function") window.__aiLifeSetCurrentYearEvent = current;
+    } catch (_) {
+      if (typeof window.__aiLifeSetCurrentYearEvent === "function") {
+        window.__aiLifeSetCurrentYearEvent = wrapAiLifeSetCurrentYearEvent(window.__aiLifeSetCurrentYearEvent);
+      }
+    }
   }
 
   function eventNeedsOutcomeResolution(source){
@@ -5687,7 +5819,7 @@
 
   function buildStoryEventFromLegacy(player, event){
     var normalized = normalizePlayer(player || {});
-    var source = isObject(event) ? event : {};
+    var source = canonicalizeUserEditedStoryEvent(isObject(event) ? event : {});
     var text = pickStoryText(source);
     var eventId = trimText(source.v2StoryEventId || source.id) || makeId("event");
     var action = source.selectedOption && source.selectedOption.text || source.action || source.playerAction || "";
@@ -5734,6 +5866,12 @@
       storytellerText: text,
       stateDiffId: "",
       sourceHash: hashText(text + JSON.stringify(source.statChanges || {}) + JSON.stringify(source.newTags || [])),
+      userEditedStory: storyEventHasUserEditAuthority(source),
+      storyTextAuthority: storyEventHasUserEditAuthority(source) ? "user_edit" : trimText(source.storyTextAuthority),
+      decisionMetadataStale: storyEventHasUserEditAuthority(source) ? true : !!source.decisionMetadataStale,
+      editedAt: trimText(source.editedAt),
+      editRevision: source.editRevision,
+      storyEditMeta: isObject(source.storyEditMeta) ? clonePlain(source.storyEditMeta) : undefined,
       legacyEventPayload: legacyPayload
     };
   }
@@ -5859,7 +5997,7 @@
 
   function createPendingTextEvent(player, currentYearEvent){
     var normalized = normalizePlayer(player || {});
-    var source = Object.assign({}, isObject(currentYearEvent) ? currentYearEvent : {});
+    var source = canonicalizeUserEditedStoryEvent(Object.assign({}, isObject(currentYearEvent) ? currentYearEvent : {}));
     if (!source.v2StoryEventId) source.v2StoryEventId = trimText(source.id) || makeId("event");
     if (!pickStoryText(source)) {
       var invalidEvent = makeInvalidStoryEvent(normalized, source, "本次正文为空或异常，已阻止进入待审正文。");
@@ -6135,6 +6273,7 @@
     var normalized = options && options.alreadyNormalized === true && isObject(player) ? player : normalizePlayer(player || {});
     var legacyPayload = isObject(storyEvent && storyEvent.legacyEventPayload) ? storyEvent.legacyEventPayload : {};
     var extractionMode = getEffectiveExtractionMode(normalized);
+    var editedStory = storyEventHasUserEditAuthority(storyEvent) || storyEventHasUserEditAuthority(legacyPayload);
     var acceptedTextBudget = compactAcceptedTextForExtraction(
       pickStoryText(storyEvent) || trimText(storyEvent && storyEvent.storytellerText),
       agentName,
@@ -6173,6 +6312,10 @@
       eventYearText: storyEvent.eventYearText,
       timeStepDays: storyEvent.timeStepDays,
       extractionMode: extractionMode,
+      userEditedStory: editedStory,
+      storyTextAuthority: editedStory ? "user_edit" : "",
+      decisionMetadataStale: editedStory ? true : !!(storyEvent && storyEvent.decisionMetadataStale),
+      storyEditMeta: editedStory ? clonePlain(storyEvent.storyEditMeta || legacyPayload.storyEditMeta || {}) : null,
       sceneControl: compactExtractionSceneControl(normalized),
       sceneState: compactExtractionSceneState(normalized.sceneState),
       shortTermSceneMemory: compactExtractionSceneMemory(normalized.shortTermSceneMemory),
@@ -6215,6 +6358,9 @@
         "【已接受正文事件】",
         JSON.stringify(eventPayload, null, 2),
         "",
+        editedStory
+          ? "注意：本事件正文经过用户编辑；acceptedText 是唯一正史依据。legacyEventContext、掷骰、概率、选项和判定说明只能作为参考 metadata，不得覆盖或反向改写 acceptedText。请按编辑后正文重新提取 NPC、tags、属性、目标、npcProfiles 等状态变化。"
+          : "",
         agentName === "ARCHIVIST"
           ? "任务：只提出 storySummary / dynamicWorldSetting / structuredSummaries 等归档 patch。日常细节不要升级为宏观动态设定。"
           : "任务：从已接受正文提取状态变化、NPC认知、推测与实际时间跨度建议。",
@@ -7357,13 +7503,13 @@
     if (!event || event.status !== "accepted_text_pending_state" || !isReviewableStoryEvent(event)) {
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
-    if (opts.skipModelExtraction === true) {
+    if (opts.skipModelExtraction === true && !storyEventHasUserEditAuthority(event)) {
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
     var existingEventDiffs = pendingDiffsForProfile(next).filter(function(diff){
       return diff && diff.status === "pending" && diff.sourceEventId === eventId;
     });
-    if (existingEventDiffs.some(diffSatisfiesFinalStateExtraction)) {
+    if (!storyEventHasUserEditAuthority(event) && existingEventDiffs.some(diffSatisfiesFinalStateExtraction)) {
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
     var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true, alreadyNormalized:true});
@@ -7446,11 +7592,17 @@
       showToast("本次正文为空或异常，已阻止进入接受流程。", "warn");
       return acceptInputAlreadyNormalized ? normalized : normalizePlayer(normalized);
     }
-    var storyEvent = Object.assign({}, pending || draft || {id:id}, {
+    var storyEvent = canonicalizeUserEditedStoryEvent(Object.assign({}, pending || draft || {id:id}, {
       status: "accepted_text_pending_state",
       acceptedAt: new Date().toISOString(),
       extractionStatus: opts.skipPostAcceptanceExtraction ? "deferred_optional_debug" : "scheduled"
-    });
+    }));
+    if (storyEventHasUserEditAuthority(storyEvent)) {
+      removePendingDiffsByEventId(id);
+      normalized.pendingStateDiffs = ensureArray(normalized.pendingStateDiffs).filter(function(diff){
+        return !diff || diff.sourceEventId !== id;
+      });
+    }
     if (storyEventRequestsNarrativeChainBeat(normalized, storyEvent)) {
       return appendStoryEventToActiveChain(normalized, storyEvent);
     }
@@ -10722,6 +10874,47 @@
     });
   }
 
+  function removeEditedStoryAuthorityWarning(){
+    Array.prototype.slice.call(document.querySelectorAll(".asv2-edit-authority-warning")).forEach(function(node){
+      if (node && node.parentElement) node.remove();
+    });
+  }
+
+  function renderEditedStoryAuthorityWarning(){
+    if (typeof document === "undefined" || !document.body) return;
+    var snapshot = getReactBridgeSnapshot();
+    var currentEvent = snapshot && snapshot.currentYearEvent;
+    if (!storyEventHasUserEditAuthority(currentEvent)) {
+      removeEditedStoryAuthorityWarning();
+      return;
+    }
+    var acceptButton = findButtonByText("接受命运并成长");
+    if (!acceptButton || !acceptButton.parentElement) return;
+    var host = findCompactContainer(acceptButton) || acceptButton.parentElement;
+    if (!host || isInsideASiteV2Ui(host)) return;
+    if (host.querySelector(".asv2-edit-authority-warning")) return;
+    var note = document.createElement("div");
+    note.className = "asv2-edit-authority-warning";
+    note.setAttribute("role", "note");
+    note.textContent = "正文已编辑：接受后以编辑后文本作为唯一正史依据；原掷骰、概率和判定说明仅作参考，可能已过期。";
+    host.insertBefore(note, acceptButton);
+  }
+
+  function installEditedStoryAuthorityWarning(){
+    if (typeof document === "undefined" || !document.body) return;
+    var schedule = function(){ window.setTimeout(renderEditedStoryAuthorityWarning, 0); };
+    schedule();
+    try {
+      var observer = new MutationObserver(function(mutations){
+        if (mutationsAreOnlyASiteV2Owned(mutations)) return;
+        schedule();
+      });
+      observer.observe(document.body, {childList:true, subtree:true, characterData:true});
+    } catch (_) {
+      window.setInterval(renderEditedStoryAuthorityWarning, 1200);
+    }
+  }
+
   function findCompactContainer(element){
     var current = element && element.parentElement;
     var best = current;
@@ -12563,6 +12756,7 @@
       ".asv2-actions{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid #dfc49a;background:#f7ead4}.asv2-actions button{border:1px solid #b88945;background:#fff8ec;color:#3b2818;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer}.asv2-actions button:nth-child(2){background:#b7791f;color:white}",
       ".asv2-debug-note{margin:0 0 10px;padding:10px 12px;border:1px solid #dfc49a;background:#fff8ec;border-radius:9px;color:#6b5438;font-size:12px;line-height:1.6}.asv2-debug-details{border:1px solid #ead7b9;border-radius:10px;background:#fffdf8;margin-bottom:10px;overflow:visible;min-width:0;max-width:100%;width:100%;box-sizing:border-box}.asv2-debug-details>summary{cursor:pointer;padding:10px 12px;font-weight:800;color:#5b3a1f;background:#f7ead4}.asv2-debug-details[open]>summary{border-bottom:1px solid #ead7b9}.asv2-debug-content{display:block;min-width:0;max-width:100%;width:100%;box-sizing:border-box;overflow-wrap:anywhere}.asv2-debug-content>section{border:0!important;border-radius:0!important;margin:0!important}",
       ".asv2-character-generation-directive{margin:10px 0;padding:10px 12px;border:1px solid var(--ui-border,rgba(185,152,95,.32));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 86%,transparent);color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-character-generation-directive label{display:block;margin-bottom:6px;font-size:13px}.asv2-character-generation-directive textarea{width:100%;box-sizing:border-box;min-height:78px;border:1px solid var(--ui-border,#dbc29b);border-radius:10px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 94%,transparent);color:var(--ui-text,#2b241d);padding:8px 9px;font:13px/1.5 system-ui,'Microsoft YaHei',sans-serif;resize:vertical}.asv2-character-generation-directive small{display:block;margin-top:6px;color:var(--ui-muted,#736553);font-size:11px;line-height:1.5}",
+      ".asv2-edit-authority-warning{margin:10px 0;padding:9px 11px;border:1px dashed #c7954d;border-radius:12px;background:#fff7ed;color:#7a3d12;font:700 12px/1.55 system-ui,'Microsoft YaHei',sans-serif;box-shadow:0 8px 20px rgba(86,60,31,.08)}",
       ".asv2-inline-control{position:relative;z-index:2;margin:16px 0;padding:14px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:18px;background:linear-gradient(180deg,color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 92%,transparent),color-mix(in srgb,var(--ui-panel,#fffaf0) 96%,transparent));box-shadow:var(--ui-shadow-soft,0 12px 28px rgba(86,60,31,.12));color:var(--ui-text,#2b241d);font-family:system-ui,'Microsoft YaHei',sans-serif}.asv2-inline-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.asv2-inline-head b{display:block;font-size:14px}.asv2-inline-head span{display:block;color:var(--ui-muted,#736553);font-size:11px;margin-top:2px}.asv2-inline-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}.asv2-inline-debug,.asv2-inline-fate,.asv2-inline-foot button,.asv2-inline-custom button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:14px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-inline-fate{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}.asv2-inline-summary{font-size:13px;font-weight:800;line-height:1.5;color:var(--ui-text,#2b241d);padding:8px 10px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:12px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 78%,transparent)}.asv2-inline-blocked-note{margin:8px 0 0;padding:8px 10px;border:1px dashed #c7954d;border-radius:12px;background:#fffaf0;color:#7a5524;font-size:12px;line-height:1.5}.asv2-inline-disabled{opacity:.48!important;cursor:not-allowed!important;filter:saturate(.75)}.asv2-inline-terminal{display:grid;gap:4px;margin:8px 0;padding:10px 12px;border:1px solid #ef8f6f;border-radius:12px;background:#fff1ed;color:#7c2d12;font-size:12px;line-height:1.5}.asv2-inline-terminal b{font-size:13px}.asv2-inline-main-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;margin-top:10px}.asv2-inline-label{font-size:12px;font-weight:900;color:var(--ui-muted,#736553);padding-top:9px}.asv2-inline-status,.asv2-inline-row,.asv2-inline-scene,.asv2-inline-foot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}.asv2-inline-status span,.asv2-inline-scene span,.asv2-inline-hint{border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 62%,transparent);border-radius:10px;padding:6px 9px;font-size:12px;color:var(--ui-muted,#736553)}.asv2-inline-scene{align-items:stretch}.asv2-inline-scene span{line-height:1.5}.asv2-inline-chip,.asv2-inline-time{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:36px;border:1px solid var(--ui-border,rgba(185,152,95,.28));background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 90%,transparent);color:var(--ui-text,#2b241d);border-radius:999px;padding:7px 12px;font-weight:800;cursor:pointer}.asv2-inline-chip-active{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d;border-color:var(--ui-border-strong,#dfc087)}.asv2-inline-time{flex-direction:column;align-items:flex-start;border-radius:14px;min-width:86px}.asv2-inline-time small{font-size:10px;color:var(--ui-muted,#736553)}.asv2-inline-details{margin-top:10px;border-top:1px solid var(--ui-border,rgba(185,152,95,.28));padding-top:8px}.asv2-inline-details>summary{cursor:pointer;color:var(--ui-muted,#736553);font-weight:800;font-size:12px}.asv2-inline-settings label,.asv2-inline-custom{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--ui-border,rgba(185,152,95,.28));border-radius:14px;padding:6px 8px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 72%,transparent);font-size:12px}.asv2-inline-settings select,.asv2-inline-custom input{border:1px solid var(--ui-border,#dbc29b);border-radius:9px;background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);padding:5px 7px}.asv2-inline-custom input{width:68px}",
       ".asv2-chain-panel{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid var(--ui-border,rgba(185,152,95,.34));border-radius:14px;background:color-mix(in srgb,var(--ui-panel-soft,#fff8ec) 74%,transparent);font-size:12px;line-height:1.55}.asv2-chain-idle{grid-template-columns:minmax(0,1fr) auto;align-items:center}.asv2-chain-panel b{font-weight:900}.asv2-chain-panel span,.asv2-chain-meta{color:var(--ui-muted,#736553)}.asv2-chain-idle button,.asv2-chain-actions button{border:1px solid var(--ui-border,#b88945);background:color-mix(in srgb,var(--ui-panel,#fffaf0) 92%,transparent);color:var(--ui-text,#2b241d);border-radius:12px;padding:7px 10px;font-weight:800;cursor:pointer}.asv2-chain-title{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.asv2-chain-question{padding:7px 9px;border-left:3px solid #c7954d;background:rgba(255,250,240,.58);border-radius:8px}.asv2-chain-meta{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-transcript{margin:0;padding-left:18px;color:var(--ui-muted,#736553)}.asv2-chain-transcript li{margin:3px 0}.asv2-chain-warning{padding:8px 10px;border:1px dashed #c46d29;border-radius:10px;background:#fff3e4;color:#7a3d12}.asv2-chain-actions{display:flex;flex-wrap:wrap;gap:8px}.asv2-chain-actions button:first-child{background:linear-gradient(135deg,var(--ui-accent,#d2a55d),var(--ui-accent-strong,#f1ca86));color:#1a130d}",
       "@media (max-width:640px){#a-site-v2-button{right:18px;bottom:86px}#a-site-v2-panel{left:12px;right:12px;bottom:140px;width:auto;max-height:calc(100vh - 160px)}}"
@@ -12580,6 +12774,7 @@
     installInlineImmersionControls();
     installCharacterGenerationDirectiveField();
     installRecentLifeCardSync();
+    installEditedStoryAuthorityWarning();
   }
 
   async function openV2DebugPanel(forceOpen){
@@ -12593,6 +12788,7 @@
     else panel.classList.remove("open");
   }
 
+  installUserEditAuthoritySetterBridge();
   patchIndexedDb();
   patchFetch();
   patchNativeExport();
@@ -12629,6 +12825,9 @@
     normalizeSceneState: normalizeSceneState,
     normalizeShortTermSceneMemory: normalizeShortTermSceneMemory,
     normalizeNarrativeChain: normalizeNarrativeChain,
+    storyEventHasUserEditAuthority: storyEventHasUserEditAuthority,
+    canonicalizeUserEditedStoryEvent: canonicalizeUserEditedStoryEvent,
+    renderEditedStoryAuthorityWarning: renderEditedStoryAuthorityWarning,
     startNarrativeChain: startNarrativeChain,
     closeNarrativeChainToPendingEvent: closeNarrativeChainToPendingEvent,
     cancelNarrativeChain: cancelNarrativeChain,

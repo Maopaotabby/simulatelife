@@ -1,0 +1,93 @@
+{
+  "applied": {
+    "body": {
+      "name": "Body",
+      "value": 12
+    },
+    "mind": {
+      "name": "Mind",
+      "value": 0
+    },
+    "tags": [
+      {
+        "name": "newTag",
+        "duration": 2,
+        "acquiredAge": 0
+      }
+    ],
+    "npcs": [
+      {
+        "name": "Alice",
+        "relation": "ally",
+        "description": "updated",
+        "id": "",
+        "status": "alive"
+      },
+      {
+        "name": "Bob",
+        "relation": "known",
+        "description": "new npc",
+        "id": "",
+        "status": "alive",
+        "birthDayOffset": 3650
+      }
+    ],
+    "goals": {
+      "longTerm": "Long Goal",
+      "shortTerm": [
+        "C"
+      ],
+      "completed": [
+        {
+          "text": "A",
+          "achievedAge": "20",
+          "type": "shortTerm"
+        },
+        {
+          "text": "B",
+          "achievedAge": "20",
+          "type": "shortTerm"
+        }
+      ]
+    },
+    "storySummary": "old summary\nnew summary",
+    "dynamicWorldSetting": "old dynamic\nnew dynamic",
+    "isAlive": false,
+    "terminal": {
+      "status": "game_over",
+      "reason": "用户确认死亡 / 终局状态 diff。",
+      "sourceEventId": "event_runtime_diff",
+      "confirmedAt": "2026-06-14T03:36:58.323Z"
+    },
+    "history": 2,
+    "canonHistory": 1,
+    "eventCount": 2,
+    "stateDiffHistory": 1,
+    "patchHistory": 9,
+    "pendingAcceptedEvents": 0,
+    "pendingStateDiffs": 0
+  },
+  "compressed": {
+    "sceneMemoryArchive": 2,
+    "recentInteractions": 1,
+    "compressionPatches": [
+      {
+        "module": "sceneMemoryArchive",
+        "sourceEventId": "event_runtime_diff",
+        "reversible": true
+      },
+      {
+        "module": "npcProfiles",
+        "sourceEventId": "event_runtime_diff",
+        "reversible": true
+      }
+    ]
+  },
+  "rollback": {
+    "requestedPatchIds": [
+      "patch_history_mqd8gibf_y871fq"
+    ],
+    "rollbackHistory": 1,
+    "patchHistory": 11
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "ok": true,
+  "generatedAt": "2026-06-14T03:37:08.412Z",
+  "save": {
+    "rootSchemaVersion": "a-site-v2",
+    "rootAppVersion": "v2-edit-authority-20260614",
+    "playerId": "edit_authority_1781408217554",
+    "name": "EditAuthorityRegression",
+    "age": "17岁",
+    "currentYear": "公历2023年9月1日",
+    "currentDate": "2023-09-01",
+    "totalDays": 6209,
+    "eventCount": 1,
+    "historyCount": 1,
+    "canonHistoryCount": 1,
+    "stateDiffHistoryCount": 1,
+    "patchHistoryCount": 12,
+    "pendingAcceptedEventsCount": 0,
+    "pendingStateDiffsCount": 0,
+    "attributes": {
+      "智力": 80,
+      "魅力": 60,
+      "体质": 40,
+      "敏捷": 55,
+      "精神": 51,
+      "财富": 90
+    },
+    "tagNames": [
+      "编辑痕迹"
+    ],
+    "npcNames": [
+      "陆青"
+    ],
+    "goals": {
+      "longTerm": "测试编辑文本是否具备后续权威。",
+      "shortTerm": [],
+      "completed": [
+        "验证编辑影响"
+      ]
+    },
+    "npcProfileKeys": [
+      "陆青"
+    ],
+    "relationshipNames": [
+      "陆青"
+    ],
+    "openThreadNames": [],
+    "loreTitles": [],
+    "sceneMemorySummaries": [
+      "陆青刚在走廊与林墨接触。"
+    ],
+    "shortTermSceneNotes": [
+      "陆青刚在走廊与林墨接触。"
+    ],
+    "latestHistoryId": "event_edit_authority",
+    "latestCanonId": "event_edit_authority",
+    "latestStateDiffId": "state_diff_mqd8ghze_ejqr2m",
+    "latestHistoryTextSample": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+    "latestCanonTextSample": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。"
+  },
+  "baseline": null,
+  "deltas": null,
+  "checks": {
+    "hasPlayer": true,
+    "hasHistory": true,
+    "hasCanonHistory": true,
+    "hasDateOrYear": true,
+    "hasAge": true,
+    "hasNumericEventCount": true,
+    "hasAttributes": true,
+    "hasTags": true,
+    "hasNpcs": true,
+    "hasGoals": true,
+    "pendingQueuesCleared": true,
+    "noUnnamedRelationships": true,
+    "v2StatePresent": true,
+    "baseClosureChanged": true,
+    "v2StateChanged": true,
+    "falseBeliefsStayNpcScoped": true,
+    "strictTagDelta": true,
+    "strictNpcDelta": true,
+    "strictGoalDelta": true,
+    "attributeChangeOrNoExplicitPatch": true
+  },
+  "input": {
+    "save": "C:\\Users\\15164\\Documents\\林墨的奇妙冒险\\09_tools\\a_site_public_site\\reports\\phase5_full_acceptance_evidence\\edit_authority_export_roundtrip_save.json",
+    "baseline": null,
+    "url": "http://127.0.0.1:8765/index.html",
+    "runtime": true,
+    "strictDeltas": false
+  },
+  "runtimePrompt": {
+    "ok": true,
+    "runtimeVersion": "v2-edit-authority-20260614",
+    "scripts": [
+      "https://cdn.tailwindcss.com/",
+      "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-edit-authority-a",
+      "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+    ],
+    "storytellerHasRecallBlock": true,
+    "plannerHasRecallBlock": true,
+    "markerCount": 2,
+    "matchedMarkerCount": 2,
+    "matchedMarkers": [
+      "陆青",
+      "陆青刚在走廊与林墨接触。"
+    ]
+  }
+}
