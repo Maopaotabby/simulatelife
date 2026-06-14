@@ -310,24 +310,162 @@ HEAD = origin/main = 0b59b656524c6ca904fd9e4cd1ce0b860a9aa837
 - 旧 6/14 full 存档可 normalize，prompt 构造包含 `[PERSISTENT_STATE_RECALL]`，且不会再出现“未命名认知”。
 - 已提供导出存档只读验收脚本 `reports/validate_v2_closure_export.js`，用于真实事件导出后的 baseline/after 对比。
 
-仍未由当前证据证明：
+## Real API Recheck After Archive Fix
 
-- 真实页面使用用户配置 API 完成一轮普通事件生成。
-- 真实页面中完成概率判定、正文确认和“接受命运并成长”点击。
-- 真实 API 事件接受后导出的正式存档通过 `validate_v2_closure_export.js --baseline --strict-deltas`。
-- 导出的正式存档重新导入后，状态仍存在。
-- 实体手机端在最新 Pages 包上完成同一流程。
+追加提交：
 
-## Remaining Risk
+```text
+edbd184 Fix V2 accepted scene archive settlement
+```
 
-本轮浏览器回归使用 stubbed DATA / ARCHIVIST，证明 runtime 闭环、Pages 包加载和 prompt 读取已通，但还没有用真实外部 API 重新生成一轮新普通事件并导出正式存档。
+本次修复点：
 
-仍需要继续完成：
+- `assets/a-site-v2-runtime.js`
+  - 新增 `buildAcceptedSceneArchivePatch()`
+  - 在 `applyConfirmedStateDiff()` 内，将已接受事件的 `shortTermSceneMemory` 派生为同一 `StateDiff` 下的 `sceneMemoryArchive` patch
+  - 不强行改 `attributes / tags / npcs / goals`
+  - 不新增 V2 模块，只接回既有 `sceneMemoryArchive`
+- `index.html`
+  - runtime cache key 更新为 `20260614-v2-state-closure-archive-a`
+- `reports/run_v2_state_closure_regression.js`
+  - 移除 stub 中显式 `sceneMemoryArchive` patch，改为只返回短期记忆，由 runtime 派生归档
 
-- 真实页面普通事件生成
-- 点击“接受命运并成长”
-- 导出存档
-- 重新导入
-- 实体手机端流程确认
+发布验证：
 
-这些属于目标后续验收，不应把本轮本地 stub 结果当作完整最终验收。
+```text
+HEAD = origin/main = edbd184dc1aab1ddd2d17769f9d7b2f0e3bf650a
+Pages URL = https://maopaotabby.github.io/simulatelife/?v=20260614-v2-state-closure-archive-a
+runtime = v2-state-closure-archive-20260614
+```
+
+Raw 与 Pages 均已验证：
+
+- raw `index.html` 包含 `20260614-v2-state-closure-archive-a`
+- raw runtime 包含 `v2-state-closure-archive-20260614`
+- Pages `index.html` 包含新 runtime query
+- Pages runtime 包含新 runtime version
+- Chrome 页面 `data-a-site-v2-version = v2-state-closure-archive-20260614`
+
+真实 API 验证流程：
+
+1. Chrome 加载最新 Pages 包。
+2. 恢复林墨档案。
+3. 导出 baseline：
+   - 本地证据：`reports/phase5_full_acceptance_evidence/real_api_archive_baseline_林墨_full_2026-06-14_v2.json`
+   - 不提交公开仓库。
+4. 触发真实普通事件：
+   - 事件日期：`公历2023年9月5日`
+   - 场景：正大广场 / 餐厅赴约
+5. 选择行动后完成概率判定：
+   - 判定成功
+   - 出现并点击 `接受结果并继续`
+6. 最终正文生成后点击：
+   - `接受命运并成长`
+7. 页面显示：
+   - `已接受命运并写入正史。`
+   - 当前场景更新为 `正大广场四楼餐厅`
+8. 导出 after：
+   - 本地证据：`reports/phase5_full_acceptance_evidence/real_api_archive_after_save_林墨_full_2026-06-14_v2.json`
+   - 不提交公开仓库。
+
+baseline -> after 摘要：
+
+| Field | Baseline | After |
+|---|---:|---:|
+| date | 公历2023年9月3日 | 公历2023年9月5日 |
+| eventCount | 21 | 22 |
+| history | 21 | 22 |
+| canonHistory | 20 | 21 |
+| stateDiffHistory | 19 | 20 |
+| patchHistory | 10 | 18 |
+| tags | 11 | 11 |
+| npcs | 3 | 3 |
+| npcProfiles | 3 | 3 |
+| relationshipStates | 2 | 2 |
+| sceneMemoryArchive | 0 | 1 |
+| pendingAcceptedEvents | 0 | 0 |
+| pendingStateDiffs | 0 | 0 |
+
+最新 `stateDiffHistory`：
+
+```text
+sourceAgent = STORYTELLER_DATA
+proposedModules = sceneState / shortTermSceneMemory / npcProfiles / sceneMemoryArchive
+```
+
+导出验证：
+
+```text
+node reports/validate_v2_closure_export.js --save real_api_archive_after_save --baseline real_api_archive_baseline --url https://maopaotabby.github.io/simulatelife/index.html
+```
+
+结果：
+
+- 非严格模式通过
+- 证据：`reports/phase5_full_acceptance_evidence/v2_closure_export_validation_20260614T024306Z.json`
+- `baseClosureChanged = true`
+- `v2StateChanged = true`
+- `pendingQueuesCleared = true`
+- `noUnnamedRelationships = true`
+- `falseBeliefsStayNpcScoped = true`
+- runtime prompt 检查通过：
+  - `STORYTELLER` prompt 包含 recall block
+  - `PLANNER` prompt 包含 recall block
+  - matched markers 包含新餐厅场景归档摘要
+
+严格模式结果：
+
+- 证据：`reports/phase5_full_acceptance_evidence/v2_closure_export_validation_20260614T024249Z.json`
+- 严格模式未通过的项：
+  - `strictTagDelta = false`
+  - `strictNpcDelta = false`
+- 原因：本轮真实事件没有明确新增 tag，也没有新增 `player.npcs`；这不是本次 archive 修复失败。`sceneState / shortTermSceneMemory / npcProfiles / sceneMemoryArchive` 均已变化。
+
+重新导入验证：
+
+1. 在最新 Chrome Pages 页面点击 `读取`。
+2. 导入 after 存档。
+3. 页面显示恢复为：
+   - `当前时间: 公历2023年9月5日`
+   - `当前：普通事件 · 公历2023年9月5日 · 正大广场四楼餐厅 · 林墨已入座，与沈知微开始午餐。`
+4. 从导入后的页面再次导出完整存档。
+5. 对比 after 与 reimport-export：
+   - 证据：`reports/phase5_full_acceptance_evidence/real_api_archive_reimport_compare_20260614.json`
+   - `ok = true`
+   - `sceneMemoryArchive = 1` 保留
+   - `history / canonHistory / stateDiffHistory / patchHistory / date / age / eventCount` 均一致
+   - `pendingAcceptedEvents = 0`
+   - `pendingStateDiffs = 0`
+
+## Updated Remaining Risk
+
+已由当前证据证明：
+
+- 最新 Pages 包已发布并加载。
+- 真实 API 普通事件可以完成：
+  - 生成事件
+  - 概率判定
+  - 正文确认
+  - `接受命运并成长`
+  - 导出 after 存档
+  - 重新导入 after 存档
+- 基础闭环已落盘：
+  - `history`
+  - `canonHistory`
+  - `date`
+  - `age`
+  - `eventCount`
+  - `stateDiffHistory`
+  - `patchHistory`
+- V2 现有长期层已随真实事件变化：
+  - `sceneState`
+  - `shortTermSceneMemory`
+  - `npcProfiles`
+  - `sceneMemoryArchive`
+- 下一轮 prompt 读取到了持久状态召回块和新场景归档。
+
+仍需保留的风险：
+
+- `tags / player.npcs / goals` 不应在每一轮普通事件中强制变化；它们仍只在旧 schema、模型明确 patch 或事件确实需要时变化。
+- 实体手机端是否加载最新 Pages 包仍需用户端确认；桌面 Chrome 与 Pages 资源已确认最新。
+- 真实完整存档包含运行日志，未提交公开仓库；本报告只提交摘要与验证 JSON。

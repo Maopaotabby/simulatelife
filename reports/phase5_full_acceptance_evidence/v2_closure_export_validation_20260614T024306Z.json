@@ -1,0 +1,232 @@
+{
+  "ok": true,
+  "generatedAt": "2026-06-14T02:43:01.449Z",
+  "save": {
+    "rootSchemaVersion": "2.4.0",
+    "rootAppVersion": "v2-state-closure-archive-20260614",
+    "playerId": "p-1781060980678-oivyz",
+    "name": "林墨",
+    "age": "17岁",
+    "currentYear": "公历2023年9月5日",
+    "currentDate": "2023-09-05",
+    "totalDays": 6210,
+    "eventCount": 22,
+    "historyCount": 22,
+    "canonHistoryCount": 21,
+    "stateDiffHistoryCount": 20,
+    "patchHistoryCount": 18,
+    "pendingAcceptedEventsCount": 0,
+    "pendingStateDiffsCount": 0,
+    "attributes": {
+      "智力": 80,
+      "魅力": 60,
+      "体质": 40,
+      "敏捷": 55,
+      "精神": 50,
+      "财富": 90
+    },
+    "tagNames": [
+      "穿越者",
+      "隐藏富豪",
+      "身体秘密",
+      "伪装者",
+      "外挂依赖",
+      "物尽其用",
+      "外强中干",
+      "抽象乐子人",
+      "审美自塑",
+      "自残依赖",
+      "旧日创伤"
+    ],
+    "npcNames": [
+      "小金",
+      "沈知微",
+      "张老师"
+    ],
+    "goals": {
+      "longTerm": "在第三世活出真正属于自己的、有实感的人生，不再被前世的阴影和外挂的虚无感所困。",
+      "shortTerm": [
+        "安顿好浦东住所，熟悉周边环境。",
+        "顺利办理入学手续，适应星桥 A-Level预备A班的课程、说明会与班级氛围。",
+        "在不暴露秘密的前提下，开始建立日常作息和社交边界。"
+      ],
+      "completed": []
+    },
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师"
+    ],
+    "relationshipNames": [
+      "Emma",
+      "办事员"
+    ],
+    "openThreadNames": [],
+    "loreTitles": [],
+    "sceneMemorySummaries": [
+      "你跟着服务员穿过餐厅那截光线略暗的通道时，空调的气流从侧面吹过来，裹着烘焙黄油和烤面包的气味，在你锁骨附近盘旋了一下。服务员没有刻意放慢脚步等你，也没有走得很快——她的节奏像是默认你会跟上来，不需要额外确认。 她在那张靠窗的桌子边停住，左手..."
+    ],
+    "shortTermSceneNotes": [],
+    "latestHistoryId": "event_mqd6gpn8_6dxs8z",
+    "latestCanonId": "event_mqd6gpn8_6dxs8z",
+    "latestStateDiffId": "state_diff_mqd6hend_y9ln0o",
+    "latestHistoryTextSample": "你跟着服务员穿过餐厅那截光线略暗的通道时，空调的气流从侧面吹过来，裹着烘焙黄油和烤面包的气味，在你锁骨附近盘旋了一下。服务员没有刻意放慢脚步等你，也没有走得很快——她的节奏像是默认你会跟上来，不需要额外确认。\n\n她在那张靠窗的桌子边停住，左手轻轻扶了一下桌沿，侧身让出座位空间，语气仍然是那种职业性的平稳：「您的位置，到这里了。」\n\n你已经看见了沈知微。\n\n她坐在靠窗那张椅子里，坐姿不是那种紧绷的端正——是放松的、带着一点日常感的姿态。一只手搁在桌面上，指尖轻轻搭着水杯的杯壁，",
+    "latestCanonTextSample": "你跟着服务员穿过餐厅那截光线略暗的通道时，空调的气流从侧面吹过来，裹着烘焙黄油和烤面包的气味，在你锁骨附近盘旋了一下。服务员没有刻意放慢脚步等你，也没有走得很快——她的节奏像是默认你会跟上来，不需要额外确认。\n\n她在那张靠窗的桌子边停住，左手轻轻扶了一下桌沿，侧身让出座位空间，语气仍然是那种职业性的平稳：「您的位置，到这里了。」\n\n你已经看见了沈知微。\n\n她坐在靠窗那张椅子里，坐姿不是那种紧绷的端正——是放松的、带着一点日常感的姿态。一只手搁在桌面上，指尖轻轻搭着水杯的杯壁，"
+  },
+  "baseline": {
+    "rootSchemaVersion": "2.4.0",
+    "rootAppVersion": "v2-state-closure-archive-20260614",
+    "playerId": "p-1781060980678-oivyz",
+    "name": "林墨",
+    "age": "17岁",
+    "currentYear": "公历2023年9月3日",
+    "currentDate": "2023-09-03",
+    "totalDays": 6208,
+    "eventCount": 21,
+    "historyCount": 21,
+    "canonHistoryCount": 20,
+    "stateDiffHistoryCount": 19,
+    "patchHistoryCount": 10,
+    "pendingAcceptedEventsCount": 0,
+    "pendingStateDiffsCount": 0,
+    "attributes": {
+      "智力": 80,
+      "魅力": 60,
+      "体质": 40,
+      "敏捷": 55,
+      "精神": 50,
+      "财富": 90
+    },
+    "tagNames": [
+      "穿越者",
+      "隐藏富豪",
+      "身体秘密",
+      "伪装者",
+      "外挂依赖",
+      "物尽其用",
+      "外强中干",
+      "抽象乐子人",
+      "审美自塑",
+      "自残依赖",
+      "旧日创伤"
+    ],
+    "npcNames": [
+      "小金",
+      "沈知微",
+      "张老师"
+    ],
+    "goals": {
+      "longTerm": "在第三世活出真正属于自己的、有实感的人生，不再被前世的阴影和外挂的虚无感所困。",
+      "shortTerm": [
+        "安顿好浦东住所，熟悉周边环境。",
+        "顺利办理入学手续，适应星桥 A-Level预备A班的课程、说明会与班级氛围。",
+        "在不暴露秘密的前提下，开始建立日常作息和社交边界。"
+      ],
+      "completed": []
+    },
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师"
+    ],
+    "relationshipNames": [
+      "Emma",
+      "办事员"
+    ],
+    "openThreadNames": [],
+    "loreTitles": [],
+    "sceneMemorySummaries": [],
+    "shortTermSceneNotes": [
+      "出租车内空调冷风贴着脸颊和脖子，皮革座椅温热。",
+      "林墨通过闭眼和深呼吸缓解了喉咙深处的紧张感。",
+      "车子在路口停过，发动机声平稳，轮胎碾过路面接缝。",
+      "抵达正大广场东门，阳光从车窗外照入。"
+    ],
+    "latestHistoryId": "event_mqd5zfjr_4yg3rn",
+    "latestCanonId": "event_mqd5zfjr_4yg3rn",
+    "latestStateDiffId": "state_diff_mqd604h4_2m57ee",
+    "latestHistoryTextSample": "你闭上眼。\n\n眼皮落下来之后，视觉被隔绝了，其他感官开始变得清晰起来。空调出风口的冷风贴着你左脸颊和脖子之间的皮肤流过去，带走了一层细密的、你自己都没注意到的小汗珠。皮革座椅的温热透过风衣面料贴在背后和腿弯处——那种温度不均匀的感觉很真实，像一个人留在座位上的体温还没完全散去。\n\n出租车在路口停了一下。你能感觉到刹车时身体微微前倾，又被椅背的阻力拉回来。窗外的声音被车门滤过一遍，鸣笛声变得更钝更远了，像隔着一层厚棉布听另一个房间里的说话声。\n\n你慢慢呼出一口气——比你预想中的",
+    "latestCanonTextSample": "你闭上眼。\n\n眼皮落下来之后，视觉被隔绝了，其他感官开始变得清晰起来。空调出风口的冷风贴着你左脸颊和脖子之间的皮肤流过去，带走了一层细密的、你自己都没注意到的小汗珠。皮革座椅的温热透过风衣面料贴在背后和腿弯处——那种温度不均匀的感觉很真实，像一个人留在座位上的体温还没完全散去。\n\n出租车在路口停了一下。你能感觉到刹车时身体微微前倾，又被椅背的阻力拉回来。窗外的声音被车门滤过一遍，鸣笛声变得更钝更远了，像隔着一层厚棉布听另一个房间里的说话声。\n\n你慢慢呼出一口气——比你预想中的"
+  },
+  "deltas": {
+    "history": 1,
+    "canonHistory": 1,
+    "eventCount": 1,
+    "stateDiffHistory": 1,
+    "tags": {
+      "added": [],
+      "removed": []
+    },
+    "npcs": {
+      "added": [],
+      "removed": []
+    },
+    "npcProfiles": {
+      "added": [],
+      "removed": []
+    },
+    "relationships": {
+      "added": [],
+      "removed": []
+    },
+    "openThreads": {
+      "added": [],
+      "removed": []
+    },
+    "loreEntries": {
+      "added": [],
+      "removed": []
+    },
+    "sceneMemoryArchive": 1,
+    "shortTermSceneNotes": -4,
+    "attributes": [],
+    "goalsChanged": false
+  },
+  "checks": {
+    "hasPlayer": true,
+    "hasHistory": true,
+    "hasCanonHistory": true,
+    "hasDateOrYear": true,
+    "hasAge": true,
+    "hasNumericEventCount": true,
+    "hasAttributes": true,
+    "hasTags": true,
+    "hasNpcs": true,
+    "hasGoals": true,
+    "pendingQueuesCleared": true,
+    "noUnnamedRelationships": true,
+    "v2StatePresent": true,
+    "baseClosureChanged": true,
+    "v2StateChanged": true,
+    "falseBeliefsStayNpcScoped": true,
+    "strictTagDelta": true,
+    "strictNpcDelta": true,
+    "strictGoalDelta": true,
+    "attributeChangeOrNoExplicitPatch": true
+  },
+  "input": {
+    "save": "C:\\Users\\15164\\Documents\\林墨的奇妙冒险\\09_tools\\a_site_public_site\\reports\\phase5_full_acceptance_evidence\\real_api_archive_after_save_林墨_full_2026-06-14_v2.json",
+    "baseline": "C:\\Users\\15164\\Documents\\林墨的奇妙冒险\\09_tools\\a_site_public_site\\reports\\phase5_full_acceptance_evidence\\real_api_archive_baseline_林墨_full_2026-06-14_v2.json",
+    "url": "https://maopaotabby.github.io/simulatelife/index.html",
+    "runtime": true,
+    "strictDeltas": false
+  },
+  "runtimePrompt": {
+    "ok": true,
+    "runtimeVersion": "v2-state-closure-archive-20260614",
+    "scripts": [
+      "https://cdn.tailwindcss.com/",
+      "https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-archive-a",
+      "https://maopaotabby.github.io/simulatelife/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+    ],
+    "storytellerHasRecallBlock": true,
+    "plannerHasRecallBlock": true,
+    "markerCount": 3,
+    "matchedMarkerCount": 3,
+    "matchedMarkers": [
+      "Emma",
+      "办事员",
+      "你跟着服务员穿过餐厅那截光线略暗的通道时，空调的气流从侧面吹过来，裹着烘焙黄油和烤面包的气味，在你锁骨附近盘旋了一下。服务员没有刻意放慢脚步等你，也没有走得很快——她的节奏像是默认你会跟上来，不需要额外确认。 她在那张靠窗的桌子边停住，左手..."
+    ]
+  }
+}
