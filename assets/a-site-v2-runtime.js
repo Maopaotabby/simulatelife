@@ -4381,26 +4381,53 @@
     };
   }
 
+  function statChangeItemName(item){
+    return trimText(item && (item.name || item.attribute || item.key || item.stat || item.label));
+  }
+
+  function statChangeItemDelta(item){
+    if (!isObject(item)) return Number(item);
+    return Number(item.change !== undefined ? item.change : item.delta !== undefined ? item.delta : item.value !== undefined ? item.value : item.amount);
+  }
+
+  function isStatChangeItem(item){
+    return isObject(item) && statChangeItemName(item) && (
+      item.change !== undefined ||
+      item.delta !== undefined ||
+      item.value !== undefined ||
+      item.amount !== undefined
+    );
+  }
+
+  function addNormalizedStatChange(result, name, delta){
+    var key = trimText(name);
+    var amount = Number(delta);
+    if (!key || !Number.isFinite(amount) || amount === 0) return;
+    result[key] = Number(result[key] || 0) + amount;
+  }
+
   function normalizeLegacyStatChanges(value){
+    if (isStatChangeItem(value)) {
+      var singleResult = {};
+      addNormalizedStatChange(singleResult, statChangeItemName(value), statChangeItemDelta(value));
+      return singleResult;
+    }
     if (isObject(value)) {
+      if (value.statChanges !== undefined) return normalizeLegacyStatChanges(value.statChanges);
+      if (value.changes !== undefined) return normalizeLegacyStatChanges(value.changes);
       var objectResult = {};
       Object.keys(value).forEach(function(key){
+        if (["sourceEventId","confidence","lastUpdated","reason","selected","operation","module","path"].indexOf(key) >= 0) return;
         var raw = value[key];
-        var delta = isObject(raw)
-          ? Number(raw.change !== undefined ? raw.change : raw.delta !== undefined ? raw.delta : raw.value !== undefined ? raw.value : raw.amount)
-          : Number(raw);
-        if (!trimText(key) || !Number.isFinite(delta) || delta === 0) return;
-        objectResult[key] = Number(objectResult[key] || 0) + delta;
+        if (isStatChangeItem(raw)) addNormalizedStatChange(objectResult, statChangeItemName(raw) || key, statChangeItemDelta(raw));
+        else addNormalizedStatChange(objectResult, key, raw);
       });
       return objectResult;
     }
     var result = {};
     ensureArray(value).forEach(function(item){
-      if (!isObject(item)) return;
-      var name = trimText(item.name || item.attribute || item.key || item.stat || item.label);
-      var delta = Number(item.change !== undefined ? item.change : item.delta !== undefined ? item.delta : item.value !== undefined ? item.value : item.amount);
-      if (!name || !Number.isFinite(delta) || delta === 0) return;
-      result[name] = Number(result[name] || 0) + delta;
+      if (!isStatChangeItem(item)) return;
+      addNormalizedStatChange(result, statChangeItemName(item), statChangeItemDelta(item));
     });
     return result;
   }
@@ -4465,6 +4492,24 @@
       });
     });
     return changes;
+  }
+
+  function getLegacyAttributeDelta(attribute, changes, aliases){
+    if (!isObject(attribute) || !isObject(changes)) return null;
+    var name = trimText(attribute.name);
+    if (!name) return null;
+    var accepted = [name].concat(ensureArray(aliases && aliases[name])).map(function(item){ return trimText(item).toLowerCase(); }).filter(Boolean);
+    var used = {};
+    var total = 0;
+    Object.keys(changes).forEach(function(key){
+      var normalizedKey = trimText(key).toLowerCase();
+      if (!normalizedKey || used[normalizedKey] || accepted.indexOf(normalizedKey) < 0) return;
+      var delta = Number(changes[key]);
+      if (!Number.isFinite(delta) || delta === 0) return;
+      used[normalizedKey] = true;
+      total += delta;
+    });
+    return total === 0 ? null : total;
   }
 
   function parseExplicitLegacySettlementPatchesFromText(text, player){
@@ -4815,6 +4860,11 @@
   }
 
   function normalizeLegacyNpcForRuntime(npc, totalDays){
+    if (typeof npc === "string" || typeof npc === "number") {
+      var npcName = trimText(npc);
+      if (!npcName) return null;
+      npc = {name: npcName, description:"由已接受事件记录的人物。"};
+    }
     if (!isObject(npc)) return null;
     var next = Object.assign({}, npc);
     var name = trimText(next.name);
@@ -4857,7 +4907,13 @@
         return !npcMatchKeys(npc).some(function(key){ return removalKeys.indexOf(key) >= 0; });
       });
     }
-    var items = ensurePatchList(value).filter(isObject);
+    var items = ensurePatchList(value).map(function(item){
+      if (typeof item === "string" || typeof item === "number") {
+        var name = trimText(item);
+        return name ? {name:name, description:"由已接受事件记录的人物。"} : null;
+      }
+      return item;
+    }).filter(isObject);
     if (operation === "update") {
       items.forEach(function(item){
         var index = legacyNpcIndex(item);
@@ -4986,6 +5042,28 @@
         });
         if (shortIndex >= 0) targetText = goals.shortTerm[shortIndex] || "";
       }
+    } else if (isObject(achieved)) {
+      var type = trimText(achieved.type || achieved.kind || achieved.scope);
+      var textNeedle = trimText(achieved.text || achieved.name || achieved.title || achieved.summary || achieved.goal || achieved.description).toLowerCase();
+      if (type === "longTerm" || type === "long" || type === "长期夙愿" || achieved.longTerm === true) {
+        targetText = goals.longTerm;
+        isLongTerm = true;
+      } else if (Number.isFinite(Number(achieved.index))) {
+        shortIndex = Math.max(0, Math.floor(Number(achieved.index)));
+        targetText = goals.shortTerm[shortIndex] || "";
+      } else if (textNeedle) {
+        var longNeedleText = trimText(goals.longTerm).toLowerCase();
+        if (longNeedleText && (textNeedle === longNeedleText || textNeedle.indexOf(longNeedleText) >= 0)) {
+          targetText = goals.longTerm;
+          isLongTerm = true;
+        } else {
+          shortIndex = goals.shortTerm.findIndex(function(item){
+            var itemText = trimText(item).toLowerCase();
+            return itemText && (itemText === textNeedle || textNeedle.indexOf(itemText) >= 0);
+          });
+          if (shortIndex >= 0) targetText = goals.shortTerm[shortIndex] || "";
+        }
+      }
     }
     if (!targetText || targetText === LEGACY_PENDING_GOAL_REMOVAL || targetText.indexOf("新的夙愿") >= 0) return;
     if (isLongTerm) completeLongTermGoal(goals, ageText);
@@ -4998,7 +5076,7 @@
   function applyGoalPatchValue(currentGoals, value, ageText){
     var goals = normalizeGoalsState(currentGoals);
     var source = isObject(value) ? value : {};
-    var changes = Array.isArray(value) ? value : ensureArray(source.modifyGoals || source.proposedChanges);
+    var changes = Array.isArray(value) ? value : (Array.isArray(source.modifyGoals) ? source.modifyGoals : ensurePatchList(source.proposedChanges));
     var summaryGoalText = trimText(source.summary || source.goal || source.text || source.title || source.name || source.description);
     var summaryGoalStatus = trimText(source.status || source.state || source.phase);
     if (
@@ -5029,7 +5107,13 @@
       var pendingLongTerm = "";
       var addSource = source.modifyGoals.add;
       if (isObject(addSource) && !Array.isArray(addSource)) {
-        ensureArray(addSource.shortTerm || addSource.short || addSource.shortTerms).forEach(function(item){
+        var directAddText = trimText(addSource.text || addSource.name || addSource.title || addSource.summary || addSource.goal || addSource.description);
+        var directAddType = trimText(addSource.type || addSource.kind || addSource.scope);
+        if (directAddText) {
+          if (directAddType === "longTerm" || directAddType === "long" || directAddType === "长期夙愿") pendingLongTerm = directAddText;
+          else pendingGoalAdds.push(directAddText);
+        }
+        ensurePatchList(addSource.shortTerm || addSource.short || addSource.shortTerms).forEach(function(item){
           var text = trimText(isObject(item) ? item.text || item.name || item.title : item);
           if (text) pendingGoalAdds.push(text);
         });
@@ -5054,15 +5138,15 @@
           }
         });
       }
-      ensureArray(source.modifyGoals.remove).forEach(function(item){
+      ensurePatchList(source.modifyGoals.remove).forEach(function(item){
         var needle = trimText(isObject(item) ? item.text || item.name : item);
-        var index = Number.isFinite(Number(item)) ? Number(item) - 1 : -1;
+        var index = Number.isFinite(Number(item)) ? Number(item) - 1 : (isObject(item) && Number.isFinite(Number(item.index)) ? Math.max(0, Math.floor(Number(item.index))) : -1);
         if (index < 0 && needle) {
           index = goals.shortTerm.findIndex(function(goal){ return trimText(goal) === needle || needle.indexOf(trimText(goal)) >= 0; });
         }
         if (index >= 0 && index < goals.shortTerm.length) goals.shortTerm[index] = LEGACY_PENDING_GOAL_REMOVAL;
       });
-      ensureArray(source.modifyGoals.achieve).forEach(function(item){ applyAchievedGoal(goals, item, ageText); });
+      ensurePatchList(source.modifyGoals.achieve).forEach(function(item){ applyAchievedGoal(goals, item, ageText); });
       goals.shortTerm = goals.shortTerm.filter(function(item){ return trimText(item).indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; });
       pendingGoalAdds.forEach(function(text){
         if (text && goals.shortTerm.length < 3 && goals.shortTerm.indexOf(text) < 0) goals.shortTerm.push(text);
@@ -5142,10 +5226,11 @@
         next.attributes = clonePlain(value);
         return next;
       }
-      var changes = isObject(value) ? value : {};
+      var changes = normalizeLegacyStatChanges(value);
+      var aliases = explicitAttributeAliases(next);
       next.attributes = ensureArray(next.attributes).map(function(attribute){
         if (!isObject(attribute)) return attribute;
-        var delta = Number(changes[attribute.name]);
+        var delta = getLegacyAttributeDelta(attribute, changes, aliases);
         if (!Number.isFinite(delta)) return attribute;
         return Object.assign({}, attribute, { value: Math.max(0, Number(attribute.value || 0) + delta) });
       });
