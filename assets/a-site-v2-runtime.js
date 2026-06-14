@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-phase5-immersive-simulation-20260607";
+  var APP_PATCH_VERSION = "v2-phase5-state-extraction-repair-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -4310,10 +4310,13 @@
 
   function normalizeNpcBelief(raw){
     var source = isObject(raw) ? raw : {belief:String(raw || "")};
+    var npcName = trimText(source.npcName || source.npc || source.name || source.character || source.person);
+    var npcId = trimText(source.npcId);
+    if (!npcId && !trimText(source.belief || source.text || source.summary)) npcId = trimText(source.id);
     return Object.assign({}, source, {
       id: itemId(source, "belief"),
-      npcId: trimText(source.npcId),
-      npcName: trimText(source.npcName || source.name),
+      npcId: npcId,
+      npcName: npcName,
       belief: trimText(source.belief || source.text || source.summary),
       truthStatus: ["true","false","uncertain"].indexOf(source.truthStatus) >= 0 ? source.truthStatus : "uncertain",
       visibility: ["npc_only","limited_public","public"].indexOf(source.visibility) >= 0 ? source.visibility : "npc_only",
@@ -5561,7 +5564,10 @@
 
   function applyNpcBeliefWithHistory(player, belief, sourceEventId, stateDiff){
     var before = normalizePlayer(player || {});
-    var after = applyNpcBelief(before, belief, sourceEventId);
+    var withNpc = ensureNpcRecordForBelief(before, belief, sourceEventId);
+    var after = applyNpcBelief(withNpc, belief, sourceEventId);
+    after = appendPatchHistory(after, before, after, {module:"npcs", operation:"add", sourceEventId:sourceEventId}, stateDiff);
+    after = appendPatchHistory(after, before, after, {module:"npcProfiles", operation:"update", sourceEventId:sourceEventId}, stateDiff);
     return appendPatchHistory(after, before, after, {module:"relationshipStates", operation:"add", sourceEventId:sourceEventId}, stateDiff);
   }
 
@@ -5993,6 +5999,10 @@
       "组织/阵营：" + summarizeEntries(normalized.affiliationStates, 4),
       "居住/据点：" + summarizeEntries(normalized.residenceStates, 4),
       "资源/补给：" + summarizeEntries(normalized.resourceStates, 4),
+      "属性：" + truncateText(JSON.stringify(ensureArray(normalized.attributes).map(function(item){ return {name:item && item.name, value:item && item.value}; })), 420),
+      "标签：" + summarizeEntries(normalized.tags, 12),
+      "NPC名单：" + summarizeEntries(normalized.npcs, 12),
+      "目标：" + truncateText(JSON.stringify(normalized.goals || {}), 520),
       "位置/活动范围：" + truncateText(JSON.stringify(normalized.locationState || {}), 360),
       "",
       "【状态提取防污染规则】",
@@ -6097,6 +6107,10 @@
     ];
     if (agentName === "STORYTELLER_DATA") {
       schemaText.push(
+        "必须检查 acceptedText 相对当前属性、标签、NPC名单和目标是否产生明确变化；若有明确变化，输出最小 proposedPatches，不要只写 confirmedFacts。",
+        "NPC首次实际登场或与主角发生可延续互动时，使用 module=npcs add/update；关系认知、误会和主观看法放入 npcBeliefs。",
+        "目标已完成、失败、被替换或出现新的短期行动目标时，使用 module=goals；不要让过期短期目标长期保留。",
+        "属性/标签只在正文有明确能力、心理、资源、身份或状态变化时更新；日常小波动可用 ±1~3，重大变化才更大。",
         "兼容旧站状态结算：若已接受正文或 legacyEventContext 中明确出现属性增量、newTags、removedTags、newNPCs、updatedNPCs、modifyGoals、achievedGoals、inspirationGained/awardInspiration、isDead，请直接输出对应 proposedPatches。",
         "映射要求：statChanges -> module=attributes operation=update；newTags/removedTags -> module=tags；newNPCs/updatedNPCs -> module=npcs；modifyGoals/achievedGoals -> module=goals；inspirationGained/awardInspiration -> module=inspirationPoints；isDead -> module=isAlive value=false。",
         "goals patch 的 value 必须使用旧结构 {modifyGoals:{add/remove/achieve/setLongTerm}, achievedGoals:[]}；不要输出 {summary,status} 这种摘要型 goals value。"
@@ -7053,6 +7067,29 @@
     });
   }
 
+  function diffHasSubstantiveStateSettlement(diff){
+    var normalized = normalizeStateDiff(diff);
+    if (!normalized) return false;
+    if (ensureArray(normalized.confirmedFacts).some(function(item){ return item && item.selected !== false; })) return true;
+    if (ensureArray(normalized.speculations).some(function(item){ return item && item.selected !== false; })) return true;
+    if (ensureArray(normalized.npcBeliefs).some(function(item){ return item && item.selected !== false; })) return true;
+    return ensureArray(normalized.proposedPatches).some(function(patch){
+      if (!patch || patch.selected === false) return false;
+      var module = trimText(patch.module || patch.path);
+      return !!module && module !== "shortTermSceneMemory";
+    });
+  }
+
+  function diffSatisfiesFinalStateExtraction(diff){
+    var normalized = normalizeStateDiff(diff);
+    if (!normalized) return false;
+    var agent = trimText(normalized.sourceAgent);
+    if (agent === "TEXT_ACCEPTANCE_ONLY" || agent === "LIGHT_SCENE_EXTRACTOR") {
+      return diffHasSubstantiveStateSettlement(normalized);
+    }
+    return true;
+  }
+
   var postAcceptanceExtractionInFlight = Object.create(null);
 
   function buildPostAcceptanceExtractionInFlightKey(player, storyEvent, extractionMode){
@@ -7180,7 +7217,7 @@
     var existingEventDiffs = pendingDiffsForProfile(next).filter(function(diff){
       return diff && diff.status === "pending" && diff.sourceEventId === eventId;
     });
-    if (existingEventDiffs.length) {
+    if (existingEventDiffs.some(diffSatisfiesFinalStateExtraction)) {
       return applyAcceptedEventSettlement(next, eventId, {alreadyNormalized:true});
     }
     var extraction = await runPostAcceptanceExtraction(next, event, {forceLegacyStateSettlement:true, alreadyNormalized:true});
@@ -7379,6 +7416,53 @@
       confidence: fact.confidence,
       sourceEventId: sourceEventId
     });
+  }
+
+  function ensureNpcRecordForBelief(player, belief, sourceEventId){
+    var source = isObject(belief) ? belief : {};
+    var name = trimText(source.npcName || source.npc || source.name || source.character || source.person || source.npcId);
+    var beliefText = trimText(source.belief || source.text || source.summary);
+    if (!name) return player;
+    var next = clonePlain(player || {});
+    var id = trimText(source.npcId) || name;
+    var matchKeys = [id, name].map(function(item){ return trimText(item).toLowerCase(); }).filter(Boolean);
+    var existingIndex = ensureArray(next.npcs).findIndex(function(npc){
+      var keys = [npc && npc.id, npc && npc.originalId, npc && npc.name, npc && npc.originalName]
+        .map(function(item){ return trimText(item).toLowerCase(); })
+        .filter(Boolean);
+      return keys.some(function(key){ return matchKeys.indexOf(key) >= 0; });
+    });
+    if (existingIndex < 0) {
+      next.npcs = ensureArray(next.npcs).concat([normalizeLegacyNpcForRuntime({
+        id: id === name ? "" : id,
+        name: name,
+        status: "active",
+        relation: "encountered",
+        description: "由已接受事件中的 NPC 认知自动建立。",
+        sourceEventId: sourceEventId
+      }, next.totalDays)]);
+    }
+    next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
+    var profileId = id || name;
+    var profile = next.npcProfiles[profileId] || next.npcProfiles[name] || normalizeNpcProfile({
+      id: profileId,
+      name: name,
+      sourceEventId: sourceEventId
+    }, profileId);
+    profile = normalizeNpcProfile(profile, profile.id || profileId);
+    profile.name = trimText(profile.name) || name;
+    profile.sourceEventId = trimText(profile.sourceEventId) || sourceEventId;
+    if (beliefText) {
+      profile.recentInteractions = ensureArray(profile.recentInteractions).concat([normalizeRecentInteraction({
+        summary: "NPC认知：" + beliefText,
+        sourceEventId: sourceEventId,
+        weight: source.truthStatus === "true" ? 0.7 : 0.55
+      })]).filter(function(item){ return item.summary; }).slice(-8);
+      if (source.truthStatus === "true" && profile.knows.indexOf(beliefText) < 0) profile.knows = profile.knows.concat([beliefText]);
+      if (source.truthStatus === "false" && profile.falseBeliefs.indexOf(beliefText) < 0) profile.falseBeliefs = profile.falseBeliefs.concat([beliefText]);
+    }
+    next.npcProfiles[profile.id] = normalizeNpcProfile(profile, profile.id);
+    return next;
   }
 
   function applyNpcBelief(player, belief, sourceEventId){
