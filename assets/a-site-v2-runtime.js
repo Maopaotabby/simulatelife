@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-edit-authority-20260614";
+  var APP_PATCH_VERSION = "v2-state-liveness-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -33,6 +33,7 @@
   var pendingCheckpointSync = Object.create(null);
   var checkpointSyncTimer = 0;
   var checkpointSyncActive = false;
+  var SHORT_TERM_GOAL_LIMIT = 5;
 
   var GRANULARITY_POLICIES = {
     micro_action: {
@@ -2030,6 +2031,7 @@
     next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
     next.pendingStateDiffs = ensureArray(next.pendingStateDiffs).map(normalizeStateDiff).filter(Boolean);
     next.stateDiffHistory = ensureArray(next.stateDiffHistory).map(normalizeStateDiff).filter(Boolean);
+    next = repairNpcStateFromStateDiffHistory(next);
     next.pendingTimeAdjustments = ensureArray(next.pendingTimeAdjustments);
     next.timeAdjustmentHistory = ensureArray(next.timeAdjustmentHistory);
     next.draftExclusions = ensureArray(next.draftExclusions);
@@ -3012,6 +3014,10 @@
         "居住/据点：" + summarizeEntries(normalized.residenceStates, 8),
         "资源/补给：" + summarizeEntries(normalized.resourceStates, 8),
         "物品/装备：" + summarizeEntries(normalized.items, 10),
+        "属性：" + truncateText(JSON.stringify(ensureArray(normalized.attributes).map(function(item){ return {name:item && item.name, value:item && item.value}; })), 520),
+        "标签：" + summarizeEntries(normalized.tags, 12),
+        "NPC名单：" + summarizeEntries(normalized.npcs, 12),
+        "目标：" + truncateText(formatGoalsForPrompt(normalized), 700),
         "位置/活动范围：" + truncateText(JSON.stringify(normalized.locationState || {}), 900)
       ].join("\n\n"),
       recentHistoryContext: summarizeEntries((normalized.history || []).filter(function(entry){ return !entry.status || entry.status === "accepted" || entry.status === "canon"; }).slice(-3), 3),
@@ -5191,7 +5197,7 @@
     var source = isObject(goals) ? goals : {};
     return {
       longTerm: trimText(source.longTerm) || LEGACY_DEFAULT_LONG_GOAL,
-      shortTerm: ensureArray(source.shortTerm).map(function(item){ return trimText(item); }).filter(function(item){ return item && item.indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; }).slice(0, 3),
+      shortTerm: ensureArray(source.shortTerm).map(function(item){ return trimText(item); }).filter(function(item){ return item && item.indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; }).slice(0, SHORT_TERM_GOAL_LIMIT),
       completed: ensureArray(source.completed).map(clonePlain)
     };
   }
@@ -5285,7 +5291,7 @@
         var alreadyTracked = goals.shortTerm.some(function(item){ return trimText(item) === summaryGoalText; }) ||
           goals.completed.some(function(item){ return trimText(item && item.text || item) === summaryGoalText; }) ||
           trimText(goals.longTerm) === summaryGoalText;
-        if (!alreadyTracked && goals.shortTerm.length < 3) goals.shortTerm.push(summaryGoalText);
+        if (!alreadyTracked && goals.shortTerm.length < SHORT_TERM_GOAL_LIMIT) goals.shortTerm.push(summaryGoalText);
       }
     }
     if (isObject(source.modifyGoals) && !Array.isArray(source.modifyGoals)) {
@@ -5335,7 +5341,7 @@
       ensurePatchList(source.modifyGoals.achieve).forEach(function(item){ applyAchievedGoal(goals, item, ageText); });
       goals.shortTerm = goals.shortTerm.filter(function(item){ return trimText(item).indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; });
       pendingGoalAdds.forEach(function(text){
-        if (text && goals.shortTerm.length < 3 && goals.shortTerm.indexOf(text) < 0) goals.shortTerm.push(text);
+        if (text && goals.shortTerm.length < SHORT_TERM_GOAL_LIMIT && goals.shortTerm.indexOf(text) < 0) goals.shortTerm.push(text);
       });
       if (pendingLongTerm) goals.longTerm = pendingLongTerm;
     }
@@ -5347,7 +5353,7 @@
         return;
       }
       var index = Number.isFinite(Number(change.index)) ? Number(change.index) : -1;
-      if (change.op === "add" && trimText(change.text) && goals.shortTerm.length < 3) goals.shortTerm.push(trimText(change.text));
+      if (change.op === "add" && trimText(change.text) && goals.shortTerm.length < SHORT_TERM_GOAL_LIMIT) goals.shortTerm.push(trimText(change.text));
       else if (change.op === "remove" && index >= 0 && index < goals.shortTerm.length) goals.shortTerm[index] = LEGACY_PENDING_GOAL_REMOVAL;
       else if (change.op === "achieve" && index >= 0 && index < goals.shortTerm.length) {
         var achievedText = goals.shortTerm[index];
@@ -5371,8 +5377,8 @@
     }
     if (trimText(source.new_longTermGoal)) goals.longTerm = trimText(source.new_longTermGoal);
     if (trimText(source.longTerm) && !source.proposedChanges && !source.modifyGoals) goals.longTerm = trimText(source.longTerm);
-    if (Array.isArray(source.new_shortTermGoals)) goals.shortTerm = source.new_shortTermGoals.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, 3);
-    else if (Array.isArray(source.shortTerm) && !source.proposedChanges && !source.modifyGoals) goals.shortTerm = source.shortTerm.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, 3);
+    if (Array.isArray(source.new_shortTermGoals)) goals.shortTerm = source.new_shortTermGoals.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, SHORT_TERM_GOAL_LIMIT);
+    else if (Array.isArray(source.shortTerm) && !source.proposedChanges && !source.modifyGoals) goals.shortTerm = source.shortTerm.map(function(item){ return trimText(item); }).filter(Boolean).slice(0, SHORT_TERM_GOAL_LIMIT);
     if (Array.isArray(source.completed) && !source.proposedChanges && !source.modifyGoals) goals.completed = source.completed.map(clonePlain);
     goals.shortTerm = goals.shortTerm.filter(function(item){ return trimText(item).indexOf(LEGACY_PENDING_GOAL_REMOVAL) < 0; });
     return goals;
@@ -5495,8 +5501,16 @@
       ensureArray(Array.isArray(value) ? value : [value]).forEach(function(item){
         var profile = normalizeNpcProfile(item);
         profiles[profile.id] = Object.assign({}, profiles[profile.id] || {}, profile);
+        next.npcs = applyLegacyNpcPatch(next.npcs, [{
+          id: profile.id === profile.name ? "" : profile.id,
+          name: profile.name || profile.id,
+          status: profile.status || "active",
+          relation: "encountered",
+          description: profile.publicSummary || profile.attitude || "由 NPC 档案卡 patch 自动建立。",
+          sourceEventId: trimText(patch.sourceEventId)
+        }], "add", next.totalDays);
       });
-      next.npcProfiles = profiles;
+      next.npcProfiles = normalizeNpcProfiles(profiles, next.npcs);
       return next;
     }
     if (module === "tags") {
@@ -7333,14 +7347,27 @@
     var patches = [];
     if (note) {
       var memory = normalizeShortTermSceneMemory(player.shortTermSceneMemory, player.sceneState);
+      var sourceEventId = trimText(storyEvent && storyEvent.id);
+      var updatedMemory = Object.assign({}, memory, {
+        notes: ensureArray(memory.notes).concat([{
+          type: "light_scene_beat",
+          summary: note,
+          visibility: "protagonist_only",
+          expiresAfterTurns: 3,
+          sourceEventId: sourceEventId,
+          createdAt: new Date().toISOString()
+        }]).filter(function(item){ return item && trimText(item.summary); }).slice(-8),
+        lastActions: ensureArray(memory.lastActions).concat([note]).filter(Boolean).slice(-12),
+        updatedAt: new Date().toISOString()
+      });
       patches.push({
         module: "shortTermSceneMemory",
         operation: "update",
         path: "shortTermSceneMemory",
-        value: memory,
+        value: updatedMemory,
         reason: "轻量提取只更新当前镜头短期记忆，不提升为长期正史。",
         confidence: "confirmed",
-        selected: false
+        selected: true
       });
     }
     return normalizeStateDiff({
@@ -7790,7 +7817,8 @@
     });
   }
 
-  function ensureNpcRecordForBelief(player, belief, sourceEventId){
+  function ensureNpcRecordForBelief(player, belief, sourceEventId, options){
+    var opts = options || {};
     var source = isObject(belief) ? belief : {};
     var name = trimText(source.npcName || source.npc || source.name || source.character || source.person || source.npcId);
     var beliefText = trimText(source.belief || source.text || source.summary);
@@ -7814,9 +7842,11 @@
         sourceEventId: sourceEventId
       }, next.totalDays)]);
     }
-    next.sceneState = normalizeSceneState(next.sceneState);
-    next.sceneState.activeNpcIds = mergeSceneList(next.sceneState.activeNpcIds, [id, name], 8);
-    next.sceneState.presentCharacters = mergeSceneList(next.sceneState.presentCharacters, [id, name], 8);
+    if (opts.skipSceneState !== true) {
+      next.sceneState = normalizeSceneState(next.sceneState);
+      next.sceneState.activeNpcIds = mergeSceneList(next.sceneState.activeNpcIds, [id, name], 8);
+      next.sceneState.presentCharacters = mergeSceneList(next.sceneState.presentCharacters, [id, name], 8);
+    }
     next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
     var profileId = id || name;
     var profile = next.npcProfiles[profileId] || next.npcProfiles[name] || normalizeNpcProfile({
@@ -7828,15 +7858,40 @@
     profile.name = trimText(profile.name) || name;
     profile.sourceEventId = trimText(profile.sourceEventId) || sourceEventId;
     if (beliefText) {
-      profile.recentInteractions = ensureArray(profile.recentInteractions).concat([normalizeRecentInteraction({
-        summary: "NPC认知：" + beliefText,
+      var interactionSummary = "NPC认知：" + beliefText;
+      var interactionSourceId = trimText(sourceEventId);
+      var existingInteractions = ensureArray(profile.recentInteractions);
+      var hasInteraction = existingInteractions.some(function(item){
+        return trimText(item && item.summary) === interactionSummary &&
+          (!interactionSourceId || trimText(item && item.sourceEventId) === interactionSourceId);
+      });
+      profile.recentInteractions = (hasInteraction ? existingInteractions : existingInteractions.concat([normalizeRecentInteraction({
+        summary: interactionSummary,
         sourceEventId: sourceEventId,
         weight: source.truthStatus === "true" ? 0.7 : 0.55
-      })]).filter(function(item){ return item.summary; }).slice(-8);
+      })])).filter(function(item){ return item.summary; }).slice(-8);
       if (source.truthStatus === "true" && profile.knows.indexOf(beliefText) < 0) profile.knows = profile.knows.concat([beliefText]);
       if (source.truthStatus === "false" && profile.falseBeliefs.indexOf(beliefText) < 0) profile.falseBeliefs = profile.falseBeliefs.concat([beliefText]);
     }
     next.npcProfiles[profile.id] = normalizeNpcProfile(profile, profile.id);
+    return next;
+  }
+
+  function repairNpcStateFromStateDiffHistory(player){
+    if (!isObject(player)) return player;
+    var next = clonePlain(player);
+    ensureArray(next.stateDiffHistory).forEach(function(rawDiff){
+      var diff = normalizeStateDiff(rawDiff);
+      if (!diff) return;
+      var status = trimText(diff.status);
+      if (status && ["accepted","accepted_merged"].indexOf(status) < 0) return;
+      ensureArray(diff.npcBeliefs).forEach(function(belief){
+        if (!belief || belief.selected === false) return;
+        next = ensureNpcRecordForBelief(next, belief, diff.sourceEventId, {skipSceneState:true});
+      });
+    });
+    next.npcs = ensureArray(next.npcs).map(function(npc){ return normalizeLegacyNpcForRuntime(npc, next.totalDays); }).filter(Boolean);
+    next.npcProfiles = normalizeNpcProfiles(next.npcProfiles, next.npcs);
     return next;
   }
 

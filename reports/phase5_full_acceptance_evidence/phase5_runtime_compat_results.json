@@ -57,7 +57,7 @@
       "status": "game_over",
       "reason": "用户确认死亡 / 终局状态 diff。",
       "sourceEventId": "event_runtime_diff",
-      "confirmedAt": "2026-06-14T03:36:58.323Z"
+      "confirmedAt": "2026-06-14T06:14:41.340Z"
     },
     "history": 2,
     "canonHistory": 1,
@@ -85,7 +85,7 @@
   },
   "rollback": {
     "requestedPatchIds": [
-      "patch_history_mqd8gibf_y871fq"
+      "patch_history_mqde3c12_0md6nt"
     ],
     "rollbackHistory": 1,
     "patchHistory": 11

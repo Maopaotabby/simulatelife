@@ -231,7 +231,13 @@ async function main() {
     if (typeof api.renderEditedStoryAuthorityWarning === "function") api.renderEditedStoryAuthorityWarning();
     warningHost.appendChild(document.createElement("span"));
     await new Promise((resolve) => window.setTimeout(resolve, 120));
-    const warningText = (warningHost.querySelector(".asv2-edit-authority-warning") || {}).textContent || "";
+    const warningText = (document.querySelector(".asv2-edit-authority-warning") || {}).textContent || "";
+    const warningDebug = {
+      warningCount: document.querySelectorAll(".asv2-edit-authority-warning").length,
+      hostHtml: warningHost.innerHTML,
+      buttonTexts: Array.from(document.querySelectorAll("button")).map((button) => button.innerText || button.textContent).slice(-8),
+      snapshotEvent: window.__ASiteV2ReactBridge && window.__ASiteV2ReactBridge.getSnapshot && window.__ASiteV2ReactBridge.getSnapshot().currentYearEvent
+    };
     if (bridgeBeforeWarningProbe) window.__ASiteV2ReactBridge = bridgeBeforeWarningProbe;
     else delete window.__ASiteV2ReactBridge;
     warningHost.remove();
@@ -290,6 +296,7 @@ async function main() {
         resultText: currentYearEventAfterEdit && currentYearEventAfterEdit.resultText
       },
       uiWarningText: warningText,
+      warningDebug,
       storyEvent: {
         text: pendingOrDraftLatest,
         sourceHash: storyEvent && storyEvent.sourceHash,

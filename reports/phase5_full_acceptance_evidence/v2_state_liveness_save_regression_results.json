@@ -1,0 +1,282 @@
+{
+  "samplePath": "C:\\Users\\15164\\OneDrive\\xwechat_files\\wxid_g86cwlojcs9022_7b68\\temp\\RWTemp\\2026-06\\26b33e1176bd8676725a49b8242ced58\\save_林墨_full_2026-06-14_v2(1).json",
+  "ok": true,
+  "runtimeVersion": "v2-state-liveness-20260614",
+  "scripts": [
+    "https://cdn.tailwindcss.com/",
+    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-liveness-a",
+    "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+  ],
+  "sampleRepair": {
+    "history": 23,
+    "stateDiffHistory": 21,
+    "npcs": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "expectedLegacyNpcNames": [
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ]
+  },
+  "profileOnly": {
+    "npcs": [
+      "只在档案里的同学"
+    ],
+    "npcProfileKeys": [
+      "profile_only_classmate"
+    ]
+  },
+  "lightMemory": {
+    "notes": [
+      "Emma把牛奶糖推到林墨手边，林墨用指尖把糖纸压平，暂时没有拆开。"
+    ],
+    "lastActions": [
+      "Emma把牛奶糖推到林墨手边，林墨用指尖把糖纸压平，暂时没有拆开。"
+    ],
+    "historyLatest": "Emma把牛奶糖推到林墨手边，林墨用指尖把糖纸压平，暂时没有拆开。"
+  },
+  "acceptClosure": {
+    "fetchCalls": [
+      {
+        "agent": "STORYTELLER_DATA",
+        "promptHasEmma": true,
+        "promptHasSampleNpc": true,
+        "promptHasCurrentEvent": true
+      },
+      {
+        "agent": "ARCHIVIST",
+        "promptHasEmma": true,
+        "promptHasSampleNpc": true,
+        "promptHasCurrentEvent": true
+      }
+    ],
+    "eventId": "event_state_liveness_accept",
+    "historyLatest": "林墨在行政办公室外和Emma、加菲、阿哲一起停了几秒。Emma把牛奶糖递过来，加菲提醒饮水机在走廊尽头，阿哲没有追问，只是跟着一起往食堂方向走。林墨维持低血糖口径，默认和他们同行。",
+    "canonLatest": "林墨在行政办公室外和Emma、加菲、阿哲一起停了几秒。Emma把牛奶糖递过来，加菲提醒饮水机在走廊尽头，阿哲没有追问，只是跟着一起往食堂方向走。林墨维持低血糖口径，默认和他们同行。",
+    "historyCount": 24,
+    "canonHistoryCount": 23,
+    "eventCount": 24,
+    "spirit": 52,
+    "tags": [
+      "穿越者",
+      "隐藏富豪",
+      "身体秘密",
+      "伪装者",
+      "外挂依赖",
+      "物尽其用",
+      "外强中干",
+      "抽象乐子人",
+      "审美自塑",
+      "自残依赖",
+      "旧日创伤",
+      "同行关系启动"
+    ],
+    "npcs": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "goals": {
+      "longTerm": "在第三世活出真正属于自己的、有实感的人生，不再被前世的阴影和外挂的虚无感所困。",
+      "shortTerm": [
+        "安顿好浦东住所，熟悉周边环境。",
+        "顺利办理入学手续，适应星桥 A-Level预备A班的课程、说明会与班级氛围。",
+        "在不暴露秘密的前提下，开始建立日常作息和社交边界。",
+        "和Emma等人一起去食堂"
+      ],
+      "completed": []
+    },
+    "patchModules": [
+      "structuredSummaries",
+      "structuredSummaries",
+      "structuredSummaries",
+      "structuredSummaries",
+      "structuredSummaries",
+      "structuredSummaries",
+      "structuredSummaries",
+      "relationshipStates",
+      "relationshipStates",
+      "relationshipStates",
+      "relationshipStates",
+      "structuredSummaries",
+      "openThreads",
+      "npcProfiles",
+      "relationshipStates",
+      "npcProfiles",
+      "relationshipStates",
+      "npcProfiles",
+      "relationshipStates",
+      "storySummary",
+      "attributes",
+      "tags",
+      "goals",
+      "npcProfiles",
+      "attributes",
+      "sceneMemoryArchive"
+    ],
+    "stateDiffAgents": [
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "STORYTELLER_DATA",
+      "LEGACY_ACCEPT_CAPTURE",
+      "TEXT_ACCEPTANCE_ONLY",
+      "TEXT_ACCEPTANCE_ONLY",
+      "ARCHIVIST+STORYTELLER_DATA"
+    ],
+    "pendingAcceptedEvents": 0,
+    "pendingStateDiffs": 0,
+    "panelHasButton": true,
+    "panelClass": "open",
+    "panelTextLength": 11415,
+    "panelHtmlLength": 67165,
+    "panelHasEmma": true,
+    "panelHasJiafei": true,
+    "panelHasAzhe": true,
+    "panelHasTag": false,
+    "bodyHasTag": true,
+    "bodyHasGoal": false,
+    "uiHasTag": true,
+    "uiHasGoal": false,
+    "futureContextHasEmma": true,
+    "futureContextHasJiafei": true,
+    "futureContextHasAzhe": true,
+    "futureContextHasTag": true,
+    "futureContextHasGoal": true,
+    "panelPreview": "V2高级调试 / 数据修复\nPhase 5 immersive simulation runtime · schema 2.4.0\n×\n\n此面板用于高级调试、存档修复、知识分层、状态模块、Prompt预览和回滚。日常游玩请使用主界面的“镜头 / 时间推进”控件。\n\n日期 / 生日 / 年龄\n日期 / 生日 / 年龄\n当前日期 YYYY-MM-DD\n故事开局日期 YYYY-MM-DD\n生日/诞辰基准 YYYY-MM-DD\n手动年龄文本\n年龄显示模式\n按生日自动\n手动文本\n近似\n季节/阶段文本\n时段文本\n\n当前计算年龄/阶段：17岁；当前显示时间：公历2023年9月1日\n\n知识分层\n知识分层\n作者设定（角色/NPC默认不知道）\n主角已知\n核心同伴/系统已知\n公开信息\nNPC认知规则\n禁止自动公开的信息\n结构化摘要基础字段\n结构化摘要基础字段\n身份摘要\n时间线摘要\n组织关系摘要\n居住据点摘要\n资源摘要\n关系摘要\n秘密摘要\n开放线索\n近期连续性提醒\n通用状态模块表单编辑器\n通用状态模块表单编辑器\n\n底层字段使用通用结构。具体题材请写在 type / summary / notes 中，不新增现代校园、修仙、奇幻或科幻专用一级字段。\n\n身份/马甲 identityStates\n新增\n全部 status\nactive\npending\nhidden\ndeprecated\n全部 visibility\nauthor_only\nprotagonist_only\nlimited_public\npublic\nfalse_belief\nunknown\nname\ntype\nstatus\nactive\ninactive\nhidden\ndestroyed\npending\ndeprecated\nvisibility\nauthor_only\nprotagonist_only\ncompanion_known\nlimited_public\npublic\nfalse_belief\nunknown\nconfidence\nconfirmed\ninferred\nspeculative\ndeprecated\nknownBy\nsummary\ndocuments\nrisks\npublicName\nprivateTruth\ncoverStory\nnotes\nsourceEventId\n标记 deprecated\n删除/停"
+  },
+  "persisted": {
+    "npcs": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "tags": [
+      "穿越者",
+      "隐藏富豪",
+      "身体秘密",
+      "伪装者",
+      "外挂依赖",
+      "物尽其用",
+      "外强中干",
+      "抽象乐子人",
+      "审美自塑",
+      "自残依赖",
+      "旧日创伤",
+      "同行关系启动"
+    ],
+    "goals": {
+      "longTerm": "在第三世活出真正属于自己的、有实感的人生，不再被前世的阴影和外挂的虚无感所困。",
+      "shortTerm": [
+        "安顿好浦东住所，熟悉周边环境。",
+        "顺利办理入学手续，适应星桥 A-Level预备A班的课程、说明会与班级氛围。",
+        "在不暴露秘密的前提下，开始建立日常作息和社交边界。",
+        "和Emma等人一起去食堂"
+      ],
+      "completed": []
+    },
+    "historyLatest": "林墨在行政办公室外和Emma、加菲、阿哲一起停了几秒。Emma把牛奶糖递过来，加菲提醒饮水机在走廊尽头，阿哲没有追问，只是跟着一起往食堂方向走。林墨维持低血糖口径，默认和他们同行。"
+  },
+  "roundtrip": {
+    "npcs": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "npcProfileKeys": [
+      "小金",
+      "沈知微",
+      "张老师",
+      "Emma",
+      "加菲",
+      "阿哲",
+      "柜台办事员"
+    ],
+    "tags": [
+      "穿越者",
+      "隐藏富豪",
+      "身体秘密",
+      "伪装者",
+      "外挂依赖",
+      "物尽其用",
+      "外强中干",
+      "抽象乐子人",
+      "审美自塑",
+      "自残依赖",
+      "旧日创伤",
+      "同行关系启动"
+    ],
+    "goals": {
+      "longTerm": "在第三世活出真正属于自己的、有实感的人生，不再被前世的阴影和外挂的虚无感所困。",
+      "shortTerm": [
+        "安顿好浦东住所，熟悉周边环境。",
+        "顺利办理入学手续，适应星桥 A-Level预备A班的课程、说明会与班级氛围。",
+        "在不暴露秘密的前提下，开始建立日常作息和社交边界。",
+        "和Emma等人一起去食堂"
+      ],
+      "completed": []
+    },
+    "historyLatest": "林墨在行政办公室外和Emma、加菲、阿哲一起停了几秒。Emma把牛奶糖递过来，加菲提醒饮水机在走廊尽头，阿哲没有追问，只是跟着一起往食堂方向走。林墨维持低血糖口径，默认和他们同行。"
+  }
+}

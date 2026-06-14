@@ -1,9 +1,9 @@
 {
   "ok": true,
-  "runtimeVersion": "v2-edit-authority-20260614",
+  "runtimeVersion": "v2-state-liveness-20260614",
   "scripts": [
     "https://cdn.tailwindcss.com/",
-    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-edit-authority-a",
+    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-liveness-a",
     "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
   ],
   "beliefOnly": {
@@ -93,14 +93,22 @@
           "summary": "递给林墨一颗牛奶糖。",
           "sourceEventId": "event_accept_stub",
           "weight": 0.7,
-          "id": "interaction_mqd8gi9n_gryt4e",
+          "id": "interaction_mqde2w8x_aezjf8",
           "pinned": false,
-          "createdAt": "2026-06-14T03:36:58.235Z"
+          "createdAt": "2026-06-14T06:14:20.865Z"
+        },
+        {
+          "summary": "NPC认知：林墨因低血糖身体不适，但愿意接受同学帮助。",
+          "sourceEventId": "event_accept_stub",
+          "weight": 0.55,
+          "id": "interaction_mqde2wac_11au28",
+          "pinned": false,
+          "createdAt": "2026-06-14T06:14:20.916Z"
         }
       ],
       "visibility": "limited_public",
       "confidence": "confirmed",
-      "lastUpdated": "2026-06-14T03:36:58.235Z"
+      "lastUpdated": "2026-06-14T06:14:20.865Z"
     },
     "relationshipNames": [
       "Emma",

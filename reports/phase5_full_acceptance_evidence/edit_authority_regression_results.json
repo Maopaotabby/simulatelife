@@ -1,9 +1,9 @@
 {
   "ok": true,
-  "runtimeVersion": "v2-edit-authority-20260614",
+  "runtimeVersion": "v2-state-liveness-20260614",
   "scripts": [
     "https://cdn.tailwindcss.com/",
-    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-edit-authority-a",
+    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-liveness-a",
     "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
   ],
   "originalText": "原始正文：林墨只是安静走过走廊，没有遇见任何新人物，也没有任何标签或属性变化。",
@@ -38,6 +38,68 @@
     "resultText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。"
   },
   "uiWarningText": "正文已编辑：接受后以编辑后文本作为唯一正史依据；原掷骰、概率和判定说明仅作参考，可能已过期。",
+  "warningDebug": {
+    "warningCount": 1,
+    "hostHtml": "<div class=\"asv2-edit-authority-warning\" role=\"note\">正文已编辑：接受后以编辑后文本作为唯一正史依据；原掷骰、概率和判定说明仅作参考，可能已过期。</div><button>接受命运并成长</button><span></span>",
+    "buttonTexts": [
+      "开启新的人生档案",
+      "",
+      "V2调试",
+      "接受命运并成长"
+    ],
+    "snapshotEvent": {
+      "id": "event_edit_authority",
+      "selectedTimeStepDays": 0,
+      "eventYear": "公历2023年9月1日",
+      "nextAge": "17岁",
+      "theme": "编辑功能影响测试",
+      "outcomeType": "SUCCESS",
+      "story": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "storytellerText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "text": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "storyText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "resultText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "statChanges": {},
+      "selectedKeyword": "编辑测试",
+      "isInteractive": true,
+      "selectedOption": {
+        "id": "option_original",
+        "text": "原始选项：安静走过走廊"
+      },
+      "probabilityBreakdown": {
+        "finalChance": 90
+      },
+      "rollResult": 83,
+      "userEditedStory": true,
+      "editedAt": "2026-06-14T06:14:03.100Z",
+      "editRevision": 1,
+      "decisionMetadataStale": true,
+      "storyTextAuthority": "user_edit",
+      "originalStoryHash": "bmm9la",
+      "originalStoryLength": 39,
+      "editedStoryHash": "1o2zdxg",
+      "storyEditMeta": {
+        "userEditedStory": true,
+        "storyTextAuthority": "user_edit",
+        "decisionMetadataStale": true,
+        "editedAt": "2026-06-14T06:14:03.100Z",
+        "editRevision": 1,
+        "originalStoryHash": "bmm9la",
+        "originalStoryLength": 39,
+        "editedStoryHash": "1o2zdxg",
+        "editedStoryLength": 53,
+        "staleMetadata": [
+          "selectedOption",
+          "probabilityBreakdown",
+          "rollResult",
+          "arbiterResult"
+        ]
+      },
+      "content": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "result": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
+      "outcome": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。"
+    }
+  },
   "storyEvent": {
     "text": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
     "sourceHash": "1r7xb7o",
@@ -152,11 +214,11 @@
   "exportPayload": {
     "version": "1.23",
     "schemaVersion": "a-site-v2",
-    "appVersion": "v2-edit-authority-20260614",
-    "exportedAt": "2026-06-14T03:36:58.012Z",
+    "appVersion": "v2-state-liveness-20260614",
+    "exportedAt": "2026-06-14T06:14:03.318Z",
     "isPruned": false,
     "player": {
-      "id": "edit_authority_1781408217554",
+      "id": "edit_authority_1781417643091",
       "name": "EditAuthorityRegression",
       "age": "17岁",
       "currentYear": "公历2023年9月1日",
@@ -213,7 +275,7 @@
           "description": "由编辑后正文触发的测试标签。",
           "sourceEventId": "event_edit_authority",
           "confidence": "confirmed",
-          "lastUpdated": "2026-06-14T03:36:57.923Z",
+          "lastUpdated": "2026-06-14T06:14:03.291Z",
           "acquiredAge": 0
         }
       ],
@@ -256,17 +318,17 @@
           "timeJumpDays": 0,
           "actualElapsedDays": 0,
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
-          "acceptedAt": "2026-06-14T03:36:57.951Z"
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
+          "acceptedAt": "2026-06-14T06:14:03.310Z"
         }
       ],
       "canonHistory": [
         {
           "id": "event_edit_authority",
-          "profileId": "edit_authority_1781408217554",
+          "profileId": "edit_authority_1781417643091",
           "profileName": "EditAuthorityRegression",
           "status": "accepted",
-          "createdAt": "2026-06-14T03:36:57.747Z",
+          "createdAt": "2026-06-14T06:14:03.230Z",
           "timeStepDays": 0,
           "eventYearText": "公历2023年9月1日",
           "eventAgeText": "17岁",
@@ -284,18 +346,18 @@
             }
           },
           "storytellerText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceHash": "1r7xb7o",
           "userEditedStory": true,
           "storyTextAuthority": "user_edit",
           "decisionMetadataStale": true,
-          "editedAt": "2026-06-14T03:36:57.564Z",
+          "editedAt": "2026-06-14T06:14:03.100Z",
           "editRevision": 1,
           "storyEditMeta": {
             "userEditedStory": true,
             "storyTextAuthority": "user_edit",
             "decisionMetadataStale": true,
-            "editedAt": "2026-06-14T03:36:57.564Z",
+            "editedAt": "2026-06-14T06:14:03.100Z",
             "editRevision": 1,
             "originalStoryHash": "bmm9la",
             "originalStoryLength": 39,
@@ -332,7 +394,7 @@
             },
             "rollResult": 83,
             "userEditedStory": true,
-            "editedAt": "2026-06-14T03:36:57.564Z",
+            "editedAt": "2026-06-14T06:14:03.100Z",
             "editRevision": 1,
             "decisionMetadataStale": true,
             "storyTextAuthority": "user_edit",
@@ -343,7 +405,7 @@
               "userEditedStory": true,
               "storyTextAuthority": "user_edit",
               "decisionMetadataStale": true,
-              "editedAt": "2026-06-14T03:36:57.564Z",
+              "editedAt": "2026-06-14T06:14:03.100Z",
               "editRevision": 1,
               "originalStoryHash": "bmm9la",
               "originalStoryLength": 39,
@@ -364,7 +426,7 @@
             "preAcceptExtractionBlocked": true
           },
           "preAcceptExtractionBlocked": true,
-          "acceptedAt": "2026-06-14T03:36:57.748Z",
+          "acceptedAt": "2026-06-14T06:14:03.231Z",
           "extractionStatus": "deferred_optional_debug",
           "story": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "storyText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
@@ -373,8 +435,8 @@
           "content": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "result": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "outcome": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
-          "tagDurationTickedAt": "2026-06-14T03:36:57.877Z",
-          "stateAcceptedAt": "2026-06-14T03:36:57.949Z",
+          "tagDurationTickedAt": "2026-06-14T06:14:03.270Z",
+          "stateAcceptedAt": "2026-06-14T06:14:03.309Z",
           "actualElapsedDays": 0
         }
       ],
@@ -382,18 +444,18 @@
       "pendingStateDiffs": [],
       "stateDiffHistory": [
         {
-          "id": "state_diff_mqd8ghze_ejqr2m",
+          "id": "state_diff_mqde2io1_yi6h7d",
           "status": "accepted",
           "sourceEventId": "event_edit_authority",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
-          "createdAt": "2026-06-14T03:36:57.776Z",
-          "reviewedAt": "2026-06-14T03:36:57.952Z",
+          "createdAt": "2026-06-14T06:14:03.246Z",
+          "reviewedAt": "2026-06-14T06:14:03.310Z",
           "confirmedFacts": [
             {
               "text": "编辑后正文已经作为接受文本进入状态提取。",
               "targetModule": "structuredSummaries",
               "confidence": "confirmed",
-              "id": "fact_mqd8ghwu_wtpi4v",
+              "id": "fact_mqde2ini_jwiyr3",
               "sourceQuote": "",
               "selected": true
             }
@@ -404,7 +466,7 @@
               "npc": "陆青",
               "belief": "林墨刚在走廊与自己发生了第一次可延续互动。",
               "confidence": "high",
-              "id": "belief_mqd8ghwu_du65jo",
+              "id": "belief_mqde2ini_zqrsyz",
               "npcId": "",
               "npcName": "陆青",
               "truthStatus": "uncertain",
@@ -421,7 +483,7 @@
               "value": "编辑后正文确认陆青、编辑痕迹标签和验证编辑影响目标进入正史。",
               "reason": "ARCHIVIST 归档编辑后接受文本。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghww_aaiax7",
+              "id": "patch_mqde2ini_q7cqm4",
               "path": "",
               "sourceQuote": "",
               "selected": true
@@ -438,7 +500,7 @@
               ],
               "reason": "只有编辑后正文包含该标签。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghwu_26903z",
+              "id": "patch_mqde2ini_dy3mxy",
               "path": "",
               "sourceQuote": "",
               "selected": true
@@ -451,7 +513,7 @@
               ],
               "reason": "只有编辑后正文包含该 NPC。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghwu_mxzzrq",
+              "id": "patch_mqde2ini_d2i2xu",
               "path": "",
               "sourceQuote": "",
               "selected": true
@@ -470,7 +532,7 @@
               },
               "reason": "只有编辑后正文声明该目标完成。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghwu_ppg72k",
+              "id": "patch_mqde2ini_78097d",
               "path": "",
               "sourceQuote": "",
               "selected": true
@@ -492,7 +554,7 @@
               },
               "reason": "下一轮应记住编辑后正文里的局部连续性。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghwu_kwd6up",
+              "id": "patch_mqde2ini_2gxdfm",
               "path": "",
               "sourceQuote": "",
               "selected": true
@@ -506,7 +568,7 @@
               },
               "reason": "旧 DATA schema statChanges 自动转换为属性增量 patch。",
               "confidence": "confirmed",
-              "id": "patch_mqd8ghwu_26ydnd",
+              "id": "patch_mqde2ini_dqfou1",
               "sourceQuote": "",
               "selected": true
             },
@@ -515,7 +577,7 @@
               "operation": "add",
               "path": "sceneMemoryArchive",
               "value": {
-                "id": "scene_archive_mqd8gi0e_e8wq1j",
+                "id": "scene_archive_mqde2iol_g84wti",
                 "sceneId": "scene_edit_authority",
                 "summary": "陆青刚在走廊与林墨接触。",
                 "lastActions": [
@@ -524,13 +586,13 @@
                 "unresolvedThreads": [],
                 "sourceEventId": "event_edit_authority",
                 "reason": "accepted_event_settlement",
-                "archivedAt": "2026-06-14T03:36:57.902Z"
+                "archivedAt": "2026-06-14T06:14:03.285Z"
               },
               "reason": "接受事件已写入正史，归档本次短期场景记忆，供后续 prompt 召回。",
               "confidence": "confirmed",
               "selected": true,
               "sourceEventId": "event_edit_authority",
-              "id": "patch_mqd8gi1u_qhro94",
+              "id": "patch_mqde2ipb_30944u",
               "sourceQuote": ""
             }
           ],
@@ -543,7 +605,7 @@
           "systemTimeStepDays": 0,
           "rawModelOutput": [
             {
-              "id": "state_diff_mqd8ghww_4brbvm",
+              "id": "state_diff_mqde2ini_o8ox3y",
               "sourceAgent": "ARCHIVIST",
               "rawModelOutput": {
                 "compacted": true,
@@ -563,7 +625,7 @@
               }
             },
             {
-              "id": "state_diff_mqd8ghwt_t30w4t",
+              "id": "state_diff_mqde2ini_d7kotz",
               "sourceAgent": "STORYTELLER_DATA",
               "rawModelOutput": {
                 "compacted": true,
@@ -585,10 +647,10 @@
           ],
           "sourceStoryEvent": {
             "id": "event_edit_authority",
-            "profileId": "edit_authority_1781408217554",
+            "profileId": "edit_authority_1781417643091",
             "profileName": "EditAuthorityRegression",
             "status": "accepted_text_pending_state",
-            "createdAt": "2026-06-14T03:36:57.747Z",
+            "createdAt": "2026-06-14T06:14:03.230Z",
             "timeStepDays": 0,
             "eventYearText": "公历2023年9月1日",
             "eventAgeText": "17岁",
@@ -611,13 +673,13 @@
             "userEditedStory": true,
             "storyTextAuthority": "user_edit",
             "decisionMetadataStale": true,
-            "editedAt": "2026-06-14T03:36:57.564Z",
+            "editedAt": "2026-06-14T06:14:03.100Z",
             "editRevision": 1,
             "storyEditMeta": {
               "userEditedStory": true,
               "storyTextAuthority": "user_edit",
               "decisionMetadataStale": true,
-              "editedAt": "2026-06-14T03:36:57.564Z",
+              "editedAt": "2026-06-14T06:14:03.100Z",
               "editRevision": 1,
               "originalStoryHash": "bmm9la",
               "originalStoryLength": 39,
@@ -654,7 +716,7 @@
               },
               "rollResult": 83,
               "userEditedStory": true,
-              "editedAt": "2026-06-14T03:36:57.564Z",
+              "editedAt": "2026-06-14T06:14:03.100Z",
               "editRevision": 1,
               "decisionMetadataStale": true,
               "storyTextAuthority": "user_edit",
@@ -665,7 +727,7 @@
                 "userEditedStory": true,
                 "storyTextAuthority": "user_edit",
                 "decisionMetadataStale": true,
-                "editedAt": "2026-06-14T03:36:57.564Z",
+                "editedAt": "2026-06-14T06:14:03.100Z",
                 "editRevision": 1,
                 "originalStoryHash": "bmm9la",
                 "originalStoryLength": 39,
@@ -686,7 +748,7 @@
               "preAcceptExtractionBlocked": true
             },
             "preAcceptExtractionBlocked": true,
-            "acceptedAt": "2026-06-14T03:36:57.748Z",
+            "acceptedAt": "2026-06-14T06:14:03.231Z",
             "extractionStatus": "deferred_optional_debug",
             "story": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
             "storyText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
@@ -701,22 +763,22 @@
       ],
       "patchHistory": [
         {
-          "id": "patch_history_mqd8ghzv_adicdi",
+          "id": "patch_history_mqde2iob_neeqq2",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "structuredSummaries",
           "operation": "append_note",
           "path": "structuredSummaries.recentContinuityNotes",
           "oldValue": "",
           "newValue": "编辑后正文已经作为接受文本进入状态提取。",
-          "appliedAt": "2026-06-14T03:36:57.883Z",
+          "appliedAt": "2026-06-14T06:14:03.275Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi02_z1db2k",
+          "id": "patch_history_mqde2iof_3youef",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "npcs",
           "operation": "add",
@@ -732,13 +794,13 @@
               "sourceEventId": "event_edit_authority"
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.890Z",
+          "appliedAt": "2026-06-14T06:14:03.279Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi07_lm5y7y",
+          "id": "patch_history_mqde2ioh_opgi6i",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "npcProfiles",
           "operation": "update",
@@ -769,21 +831,21 @@
                   "summary": "NPC认知：林墨刚在走廊与自己发生了第一次可延续互动。",
                   "sourceEventId": "event_edit_authority",
                   "weight": 0.55,
-                  "id": "interaction_mqd8ghzx_nsvjbp",
+                  "id": "interaction_mqde2ioc_cgm89a",
                   "pinned": false,
-                  "createdAt": "2026-06-14T03:36:57.886Z"
+                  "createdAt": "2026-06-14T06:14:03.276Z"
                 }
               ],
               "visibility": "limited_public"
             }
           },
-          "appliedAt": "2026-06-14T03:36:57.895Z",
+          "appliedAt": "2026-06-14T06:14:03.281Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi09_ysvgbs",
+          "id": "patch_history_mqde2ioj_xzqbx1",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "sceneState",
           "operation": "update",
@@ -812,7 +874,7 @@
             "sceneEndReason": "scene_goal_completed",
             "lastMicroActions": [],
             "turnIndex": 1,
-            "lastUpdated": "2026-06-14T03:36:57.751Z"
+            "lastUpdated": "2026-06-14T06:14:03.233Z"
           },
           "newValue": {
             "sceneId": "scene_edit_authority",
@@ -842,15 +904,15 @@
             "sceneEndReason": "scene_goal_completed",
             "lastMicroActions": [],
             "turnIndex": 1,
-            "lastUpdated": "2026-06-14T03:36:57.751Z"
+            "lastUpdated": "2026-06-14T06:14:03.233Z"
           },
-          "appliedAt": "2026-06-14T03:36:57.897Z",
+          "appliedAt": "2026-06-14T06:14:03.283Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi0d_tg7yn0",
+          "id": "patch_history_mqde2iol_av3dgr",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "relationshipStates",
           "operation": "add",
@@ -858,7 +920,7 @@
           "oldValue": [],
           "newValue": [
             {
-              "id": "belief_mqd8ghwu_du65jo",
+              "id": "belief_mqde2ini_zqrsyz",
               "type": "npc_belief",
               "name": "陆青",
               "npcId": "",
@@ -875,29 +937,29 @@
               "sourceEventId": "event_edit_authority",
               "sourceQuote": "",
               "notes": "由 Phase 4 diff 确认为 NPC 认知层，不作为客观事实写入。",
-              "lastUpdated": "2026-06-14T03:36:57.887Z"
+              "lastUpdated": "2026-06-14T06:14:03.277Z"
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.901Z",
+          "appliedAt": "2026-06-14T06:14:03.285Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi0x_rpf875",
+          "id": "patch_history_mqde2ioq_s9mwdu",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "storySummary",
           "operation": "append_note",
           "path": "",
           "oldValue": "",
           "newValue": "编辑后正文确认陆青、编辑痕迹标签和验证编辑影响目标进入正史。",
-          "appliedAt": "2026-06-14T03:36:57.921Z",
+          "appliedAt": "2026-06-14T06:14:03.290Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi11_2m9edg",
+          "id": "patch_history_mqde2iot_wq54fo",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "tags",
           "operation": "add",
@@ -910,17 +972,17 @@
               "description": "由编辑后正文触发的测试标签。",
               "sourceEventId": "event_edit_authority",
               "confidence": "confirmed",
-              "lastUpdated": "2026-06-14T03:36:57.923Z",
+              "lastUpdated": "2026-06-14T06:14:03.291Z",
               "acquiredAge": 0
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.926Z",
+          "appliedAt": "2026-06-14T06:14:03.293Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi15_jjnf3d",
+          "id": "patch_history_mqde2iox_xbu7fy",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "npcs",
           "operation": "add",
@@ -945,13 +1007,13 @@
               "sourceEventId": "event_edit_authority"
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.929Z",
+          "appliedAt": "2026-06-14T06:14:03.297Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi1a_u5lvl0",
+          "id": "patch_history_mqde2ip1_4tvb4c",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "goals",
           "operation": "update",
@@ -974,13 +1036,13 @@
               }
             ]
           },
-          "appliedAt": "2026-06-14T03:36:57.934Z",
+          "appliedAt": "2026-06-14T06:14:03.301Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi1e_hlx07r",
+          "id": "patch_history_mqde2ip3_94tvlu",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "shortTermSceneMemory",
           "operation": "update",
@@ -995,7 +1057,7 @@
             "expiresAtSceneChange": true,
             "compressedAt": "",
             "lastCompressedSummary": "",
-            "updatedAt": "2026-06-14T03:36:57.753Z"
+            "updatedAt": "2026-06-14T06:14:03.233Z"
           },
           "newValue": {
             "sceneId": "scene_edit_authority",
@@ -1003,12 +1065,12 @@
               {
                 "summary": "陆青刚在走廊与林墨接触。",
                 "sourceEventId": "event_edit_authority",
-                "id": "scene_note_mqd8gi1b_c3z0vj",
+                "id": "scene_note_mqde2ip1_4h05yi",
                 "type": "scene_beat",
                 "detail": "",
                 "visibility": "protagonist_only",
                 "expiresAfterTurns": 0,
-                "createdAt": "2026-06-14T03:36:57.935Z"
+                "createdAt": "2026-06-14T06:14:03.302Z"
               }
             ],
             "lastActions": [
@@ -1020,18 +1082,18 @@
             "expiresAtSceneChange": true,
             "compressedAt": "",
             "lastCompressedSummary": "",
-            "updatedAt": "2026-06-14T03:36:57.753Z",
+            "updatedAt": "2026-06-14T06:14:03.233Z",
             "sourceEventId": "event_edit_authority",
             "confidence": "confirmed",
-            "lastUpdated": "2026-06-14T03:36:57.935Z"
+            "lastUpdated": "2026-06-14T06:14:03.301Z"
           },
-          "appliedAt": "2026-06-14T03:36:57.938Z",
+          "appliedAt": "2026-06-14T06:14:03.303Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi1j_tlitrq",
+          "id": "patch_history_mqde2ip6_aukvvq",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "attributes",
           "operation": "update",
@@ -1088,13 +1150,13 @@
               "value": 90
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.943Z",
+          "appliedAt": "2026-06-14T06:14:03.306Z",
           "reversible": true
         },
         {
-          "id": "patch_history_mqd8gi1o_3on0jb",
+          "id": "patch_history_mqde2ip8_w7urpw",
           "sourceEventId": "event_edit_authority",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceAgent": "ARCHIVIST+STORYTELLER_DATA",
           "module": "sceneMemoryArchive",
           "operation": "add",
@@ -1102,7 +1164,7 @@
           "oldValue": [],
           "newValue": [
             {
-              "id": "scene_archive_mqd8gi0e_e8wq1j",
+              "id": "scene_archive_mqde2iol_g84wti",
               "sceneId": "scene_edit_authority",
               "summary": "陆青刚在走廊与林墨接触。",
               "lastActions": [
@@ -1111,18 +1173,18 @@
               "unresolvedThreads": [],
               "sourceEventId": "event_edit_authority",
               "reason": "accepted_event_settlement",
-              "archivedAt": "2026-06-14T03:36:57.902Z",
+              "archivedAt": "2026-06-14T06:14:03.285Z",
               "confidence": "confirmed",
-              "lastUpdated": "2026-06-14T03:36:57.945Z"
+              "lastUpdated": "2026-06-14T06:14:03.307Z"
             }
           ],
-          "appliedAt": "2026-06-14T03:36:57.948Z",
+          "appliedAt": "2026-06-14T06:14:03.308Z",
           "reversible": true
         }
       ],
       "relationshipStates": [
         {
-          "id": "belief_mqd8ghwu_du65jo",
+          "id": "belief_mqde2ini_zqrsyz",
           "type": "npc_belief",
           "name": "陆青",
           "npcId": "",
@@ -1139,14 +1201,14 @@
           "sourceEventId": "event_edit_authority",
           "sourceQuote": "",
           "notes": "由 Phase 4 diff 确认为 NPC 认知层，不作为客观事实写入。",
-          "lastUpdated": "2026-06-14T03:36:57.887Z"
+          "lastUpdated": "2026-06-14T06:14:03.277Z"
         }
       ],
       "openThreads": [],
       "loreEntries": [],
       "sceneMemoryArchive": [
         {
-          "id": "scene_archive_mqd8gi0e_e8wq1j",
+          "id": "scene_archive_mqde2iol_g84wti",
           "sceneId": "scene_edit_authority",
           "summary": "陆青刚在走廊与林墨接触。",
           "lastActions": [
@@ -1155,9 +1217,9 @@
           "unresolvedThreads": [],
           "sourceEventId": "event_edit_authority",
           "reason": "accepted_event_settlement",
-          "archivedAt": "2026-06-14T03:36:57.902Z",
+          "archivedAt": "2026-06-14T06:14:03.285Z",
           "confidence": "confirmed",
-          "lastUpdated": "2026-06-14T03:36:57.945Z"
+          "lastUpdated": "2026-06-14T06:14:03.307Z"
         }
       ],
       "sceneControl": {
@@ -1219,7 +1281,7 @@
         "sceneEndReason": "scene_goal_completed",
         "lastMicroActions": [],
         "turnIndex": 1,
-        "lastUpdated": "2026-06-14T03:36:57.751Z"
+        "lastUpdated": "2026-06-14T06:14:03.233Z"
       },
       "shortTermSceneMemory": {
         "sceneId": "scene_edit_authority",
@@ -1227,12 +1289,12 @@
           {
             "summary": "陆青刚在走廊与林墨接触。",
             "sourceEventId": "event_edit_authority",
-            "id": "scene_note_mqd8gi1b_c3z0vj",
+            "id": "scene_note_mqde2ip1_4h05yi",
             "type": "scene_beat",
             "detail": "",
             "visibility": "protagonist_only",
             "expiresAfterTurns": 0,
-            "createdAt": "2026-06-14T03:36:57.935Z"
+            "createdAt": "2026-06-14T06:14:03.302Z"
           }
         ],
         "lastActions": [
@@ -1244,10 +1306,10 @@
         "expiresAtSceneChange": true,
         "compressedAt": "",
         "lastCompressedSummary": "",
-        "updatedAt": "2026-06-14T03:36:57.753Z",
+        "updatedAt": "2026-06-14T06:14:03.233Z",
         "sourceEventId": "event_edit_authority",
         "confidence": "confirmed",
-        "lastUpdated": "2026-06-14T03:36:57.935Z"
+        "lastUpdated": "2026-06-14T06:14:03.301Z"
       },
       "npcProfiles": {
         "陆青": {
@@ -1274,16 +1336,16 @@
               "summary": "NPC认知：林墨刚在走廊与自己发生了第一次可延续互动。",
               "sourceEventId": "event_edit_authority",
               "weight": 0.55,
-              "id": "interaction_mqd8ghzx_nsvjbp",
+              "id": "interaction_mqde2ioc_cgm89a",
               "pinned": false,
-              "createdAt": "2026-06-14T03:36:57.886Z"
+              "createdAt": "2026-06-14T06:14:03.276Z"
             }
           ],
           "visibility": "limited_public"
         }
       },
       "schemaVersion": "2.4.0",
-      "appVersion": "v2-edit-authority-20260614",
+      "appVersion": "v2-state-liveness-20260614",
       "legacyTotalDays": 6205,
       "birthYearNum": 2006,
       "birthYear": "2006年",
@@ -1434,24 +1496,24 @@
       "pendingTimeAdjustments": [],
       "timeAdjustmentHistory": [
         {
-          "id": "time_adjustment_mqd8ghzk_nu9ar5",
+          "id": "time_adjustment_mqde2io4_uvt99d",
           "eventId": "event_edit_authority",
           "oldDate": "2023-09-01",
           "newDate": "2023-09-01",
           "days": 0,
           "source": "user_confirmed_story_elapsed_time",
           "evidence": "同一走廊即时连续。",
-          "confirmedAt": "2026-06-14T03:36:57.872Z"
+          "confirmedAt": "2026-06-14T06:14:03.268Z"
         }
       ],
       "draftExclusions": [],
       "draftHistory": [
         {
           "id": "event_edit_authority",
-          "profileId": "edit_authority_1781408217554",
+          "profileId": "edit_authority_1781417643091",
           "profileName": "EditAuthorityRegression",
           "status": "accepted",
-          "createdAt": "2026-06-14T03:36:57.747Z",
+          "createdAt": "2026-06-14T06:14:03.230Z",
           "timeStepDays": 0,
           "eventYearText": "公历2023年9月1日",
           "eventAgeText": "17岁",
@@ -1469,18 +1531,18 @@
             }
           },
           "storytellerText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
-          "stateDiffId": "state_diff_mqd8ghze_ejqr2m",
+          "stateDiffId": "state_diff_mqde2io1_yi6h7d",
           "sourceHash": "1r7xb7o",
           "userEditedStory": true,
           "storyTextAuthority": "user_edit",
           "decisionMetadataStale": true,
-          "editedAt": "2026-06-14T03:36:57.564Z",
+          "editedAt": "2026-06-14T06:14:03.100Z",
           "editRevision": 1,
           "storyEditMeta": {
             "userEditedStory": true,
             "storyTextAuthority": "user_edit",
             "decisionMetadataStale": true,
-            "editedAt": "2026-06-14T03:36:57.564Z",
+            "editedAt": "2026-06-14T06:14:03.100Z",
             "editRevision": 1,
             "originalStoryHash": "bmm9la",
             "originalStoryLength": 39,
@@ -1517,7 +1579,7 @@
             },
             "rollResult": 83,
             "userEditedStory": true,
-            "editedAt": "2026-06-14T03:36:57.564Z",
+            "editedAt": "2026-06-14T06:14:03.100Z",
             "editRevision": 1,
             "decisionMetadataStale": true,
             "storyTextAuthority": "user_edit",
@@ -1528,7 +1590,7 @@
               "userEditedStory": true,
               "storyTextAuthority": "user_edit",
               "decisionMetadataStale": true,
-              "editedAt": "2026-06-14T03:36:57.564Z",
+              "editedAt": "2026-06-14T06:14:03.100Z",
               "editRevision": 1,
               "originalStoryHash": "bmm9la",
               "originalStoryLength": 39,
@@ -1549,7 +1611,7 @@
             "preAcceptExtractionBlocked": true
           },
           "preAcceptExtractionBlocked": true,
-          "acceptedAt": "2026-06-14T03:36:57.748Z",
+          "acceptedAt": "2026-06-14T06:14:03.231Z",
           "extractionStatus": "deferred_optional_debug",
           "story": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "storyText": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
@@ -1558,8 +1620,8 @@
           "content": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "result": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
           "outcome": "编辑后正文：林墨在走廊遇见测试NPC陆青，获得标签「编辑痕迹」，精神提升1点，并完成目标「验证编辑影响」。",
-          "tagDurationTickedAt": "2026-06-14T03:36:57.877Z",
-          "stateAcceptedAt": "2026-06-14T03:36:57.949Z",
+          "tagDurationTickedAt": "2026-06-14T06:14:03.270Z",
+          "stateAcceptedAt": "2026-06-14T06:14:03.309Z",
           "actualElapsedDays": 0
         }
       ],
@@ -1587,7 +1649,7 @@
       "isAlive": true,
       "migrationHistory": [
         {
-          "at": "2026-06-14T03:36:57.561Z",
+          "at": "2026-06-14T06:14:03.097Z",
           "fromSchemaVersion": "legacy",
           "toSchemaVersion": "2.4.0",
           "convertedFields": [
@@ -1602,7 +1664,7 @@
           ],
           "warnings": [],
           "errors": [],
-          "tool": "v2-edit-authority-20260614",
+          "tool": "v2-state-liveness-20260614",
           "notes": [
             "legacy schoolState 已迁移为 affiliationStates 条目。",
             "legacy homeState 已迁移为 residenceStates 条目。",
@@ -1611,7 +1673,7 @@
         }
       ],
       "migrationReport": {
-        "at": "2026-06-14T03:36:57.561Z",
+        "at": "2026-06-14T06:14:03.097Z",
         "fromSchemaVersion": "legacy",
         "toSchemaVersion": "2.4.0",
         "convertedFields": [
@@ -1626,7 +1688,7 @@
         ],
         "warnings": [],
         "errors": [],
-        "tool": "v2-edit-authority-20260614",
+        "tool": "v2-state-liveness-20260614",
         "notes": [
           "legacy schoolState 已迁移为 affiliationStates 条目。",
           "legacy homeState 已迁移为 residenceStates 条目。",
@@ -1635,7 +1697,7 @@
       },
       "migrationNotes": "legacy schoolState 已迁移为 affiliationStates 条目。\nlegacy homeState 已迁移为 residenceStates 条目。\nlegacy legalIdentityState 已迁移为 identityStates 条目。",
       "lastV2AcceptedStoryEventId": "event_edit_authority",
-      "lastPhase4InterceptAt": "2026-06-14T03:36:57.759Z",
+      "lastPhase4InterceptAt": "2026-06-14T06:14:03.235Z",
       "storySummary": "编辑后正文确认陆青、编辑痕迹标签和验证编辑影响目标进入正史。",
       "eventCount": 1,
       "__asv2ConsumedPromptCompactionGuard": {
@@ -1660,7 +1722,7 @@
           },
           "stateDiffHistory": {
             "length": 1,
-            "lastKey": "state_diff_mqd8ghze_ejqr2m"
+            "lastKey": "state_diff_mqde2io1_yi6h7d"
           },
           "pendingStateDiffs": {
             "length": 0,
@@ -1668,7 +1730,7 @@
           }
         }
       },
-      "lastUpdated": 1781408217982
+      "lastUpdated": 1781417643314
     },
     "logs": []
   }
