@@ -4,8 +4,8 @@
   "runtimeVersion": "v2-state-liveness-20260614",
   "scripts": [
     "https://cdn.tailwindcss.com/",
-    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-liveness-a",
-    "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+    "https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-state-liveness-a",
+    "https://maopaotabby.github.io/simulatelife/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
   ],
   "sampleRepair": {
     "history": 23,

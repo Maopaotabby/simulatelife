@@ -82,4 +82,18 @@ Runtime version: `v2-state-liveness-20260614`
 
 `index.html` cache bust: `20260614-v2-state-liveness-a`
 
-发布状态：待 commit/push 和 GitHub Pages 验证。
+发布状态：已发布并验证。
+
+发布 commit: `8454cf2`
+
+Raw GitHub 验证：
+
+- `index.html` 返回 200，包含 `20260614-v2-state-liveness-a`。
+- `assets/a-site-v2-runtime.js` 返回 200，包含 `v2-state-liveness-20260614`、`repairNpcStateFromStateDiffHistory`、`标签：`、`目标：`。
+
+GitHub Pages 验证：
+
+- 正确入口：`https://maopaotabby.github.io/simulatelife/`
+- Pages `index.html` 返回 200，包含 `20260614-v2-state-liveness-a`。
+- Pages runtime 返回 200，包含 `v2-state-liveness-20260614`、`repairNpcStateFromStateDiffHistory`、`标签：`、`目标：`。
+- 手机视口对 Pages 地址执行 `run_v2_state_liveness_save_regression.js` 通过。
