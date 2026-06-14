@@ -1,0 +1,181 @@
+# A Site V2 State Closure Recall Report - 2026-06-14
+
+## Scope
+
+目标：冻结新增 V2 功能，只修复“接受正文后状态结算闭环”中已经落盘的 V2 状态无法稳定进入下一轮 prompt 的断点。
+
+本轮没有新增事件链、镜头系统、调试面板、UI 美化或新状态模块。
+
+修改文件：
+
+- `assets/a-site-v2-runtime.js`
+- `index.html`
+- `reports/run_v2_state_closure_regression.js`
+
+## Old Logic Baseline
+
+旧站基础字段由 `STORYTELLER_DATA` / 接受事件结果驱动，并写回：
+
+- `statChanges -> attributes`
+- `newTags / removedTags -> tags`
+- `newNPCs / updatedNPCs -> npcs`
+- `modifyGoals / achievedGoals -> goals`
+- 正文进入 `history / canonHistory`
+- 时间、年龄和事件计数由接受流程推进
+
+当前 V2 代码已把旧 DATA schema 转为 `StateDiff.proposedPatches`，再由 `applyConfirmedStateDiff()` 写回。该旧逻辑依据见既有报告：
+
+- `reports/A_site_v2_phase5_legacy_state_settlement_report.md`
+- `reports/A_site_v2_state_compat_repair_report_20260614.md`
+
+## Current Breakpoints Found
+
+审阅用户 6/14 原始 full 存档：
+
+- `history = 23`
+- `canonHistory = 22`
+- `eventCount = 23`
+- `tags = 11`
+- `npcs = 3`
+- `npcProfiles = 3`
+- `openThreads = 0`
+- `loreEntries = 0`
+- `sceneMemoryArchive = 0`
+
+最近多次事件进入：
+
+- `TEXT_ACCEPTANCE_ONLY`
+- `LEGACY_ACCEPT_CAPTURE` with no patches
+- `accepted_event_no_state_diff_fallback`
+
+其中一次真实 `STORYTELLER_DATA` 只产生 `confirmedFacts / npcBeliefs`，没有 `proposedPatches`。旧存档里还出现过 `npc:"Emma"` 但 `npcName:""` 的兼容问题，导致关系认知显示成“未命名认知”。
+
+当前正式代码已经有部分修复：
+
+- `normalizeNpcBelief()` 已兼容 `npc / name / character / person`
+- `applyNpcBeliefWithHistory()` 会建立 `npcs / npcProfiles / relationshipStates`
+- `buildDiffFromAgent()` 已兼容旧 DATA schema
+
+本轮新发现的剩余断点是：部分 V2 状态已经能落盘，但下一轮主生成 prompt 对 `openThreads / relationshipStates / sceneMemoryArchive / matched loreEntries` 的读取不稳定，尤其任务代理紧凑上下文容易看不到这些状态。
+
+## Fix Applied
+
+新增紧凑状态召回块：
+
+```text
+[PERSISTENT_STATE_RECALL]
+openThreads:
+relationshipStates:
+sceneMemoryArchive:
+matchedLoreEntries:
+```
+
+接入位置：
+
+- `buildContextForAgent().continuityContext`
+- `buildImmersionContextBlock()`
+- `buildNarrativeMainImmersionBlock()`
+- `buildCompactMainTaskImmersionBlock()`
+- `buildMainTaskGenerationContextBlock()` 的长期摘要简表
+
+目的：
+
+- 已接受事件产生的开放线索、NPC 关系认知、长期场景归档和匹配 lore 能进入下一轮 `PLANNER / DIRECTOR / DESIGNER / ARBITER / STORYTELLER` 的 prompt。
+- 保持紧凑摘要，不恢复超长全文上下文。
+- 不把 falseBeliefs / npc_belief 升级成 public / confirmed 客观事实。
+
+`index.html` runtime cache key 更新为：
+
+```text
+assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-recall-a
+```
+
+Runtime version:
+
+```text
+v2-state-closure-recall-20260614
+```
+
+## Validation
+
+静态检查：
+
+```text
+node --check assets/a-site-v2-runtime.js
+node --check reports/run_v2_state_closure_regression.js
+git diff --check -- assets/a-site-v2-runtime.js index.html reports/run_v2_state_closure_regression.js
+```
+
+本地 HTTP 检查：
+
+```text
+http://127.0.0.1:8765/index.html
+http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-recall-a
+```
+
+结果：
+
+- index 返回 `200`
+- index 指向新 runtime query
+- runtime 返回 `200`
+- runtime 包含 `v2-state-closure-recall-20260614`
+- runtime 包含 `PERSISTENT_STATE_RECALL`
+
+浏览器回归脚本：
+
+```text
+node reports/run_v2_state_closure_regression.js
+```
+
+证据：
+
+- `reports/phase5_full_acceptance_evidence/v2_state_closure_regression_results.json`
+- `output/playwright/v2_state_closure_regression_pixel5.png`
+
+覆盖结果：
+
+- `interceptLegacyAccept -> runPostAcceptanceExtraction -> applyAcceptedEventSettlement`
+- stubbed `STORYTELLER_DATA`
+- stubbed `ARCHIVIST`
+- `history = 1`
+- `canonHistory = 1`
+- `eventCount >= 1`
+- `attributes` 通过旧 `statChanges` 更新，`精神 50 -> 51`
+- `tags` 写入 `行政口径建立`
+- `npcs` 写入 `Emma / 加菲 / 阿哲 / 柜台办事员`
+- `goals` 完成 `拿到校园卡`，新增 `完成学生系统绑定`
+- `npcProfiles` 写入上述 NPC
+- `relationshipStates` 写入 NPC 认知，且没有“未命名认知”
+- `openThreads` 写入 Emma 相关开放线索
+- `loreEntries` 写入 `行政办公室校园卡流程`
+- `sceneMemoryArchive` 写入行政办公室互动归档
+- `shortTermSceneMemory` 写入下一轮局部连续性
+- pending queues 清空
+- 保存后重新读取 profile，`history / canonHistory / npcProfiles / loreEntries / sceneMemoryArchive` 仍存在
+- 下一轮 `STORYTELLER` prompt 能读到 Emma、matched lore、open thread
+- 下一轮 `PLANNER` task-compact prompt 能读到 matched lore、open thread、scene archive
+
+旧 6/14 存档兼容读取：
+
+- `reports/phase5_full_acceptance_evidence/v2_old_save_compat_20260614.json`
+
+结果：
+
+- 当前 runtime 可以 normalize 原始旧 full 存档
+- `history / canonHistory / eventCount / tags / npcs / npcProfiles / stateDiffHistory` 保留
+- prompt 构造包含 `[PERSISTENT_STATE_RECALL]`
+- 未对旧存档做自动补正；历史缺失仍需单独存档回填
+
+## Remaining Risk
+
+本轮浏览器回归使用 stubbed DATA / ARCHIVIST，证明 runtime 闭环和 prompt 读取已通，但还没有用真实外部 API 重新生成一轮新普通事件并导出正式存档。
+
+发布后仍需要继续完成：
+
+- 真实页面普通事件生成
+- 点击“接受命运并成长”
+- 导出存档
+- 重新导入
+- 手机端 Pages 流程确认
+
+这些属于目标后续验收，不应把本轮本地 stub 结果当作完整最终验收。

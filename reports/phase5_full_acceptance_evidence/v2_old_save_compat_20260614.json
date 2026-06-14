@@ -1,0 +1,20 @@
+{
+  "savePath": "C:\\Users\\15164\\OneDrive\\xwechat_files\\wxid_g86cwlojcs9022_7b68\\temp\\RWTemp\\2026-06\\26b33e1176bd8676725a49b8242ced58\\save_林墨_full_2026-06-14_v2(1).json",
+  "result": {
+    "runtimeVersion": "v2-state-closure-recall-20260614",
+    "name": "林墨",
+    "history": 23,
+    "canonHistory": 22,
+    "eventCount": 23,
+    "tags": 11,
+    "npcs": 3,
+    "npcProfiles": 3,
+    "relationshipStates": 1,
+    "openThreads": 0,
+    "loreEntries": 0,
+    "sceneMemoryArchive": 0,
+    "stateDiffHistory": 21,
+    "hasUnnamedRelationship": false,
+    "promptBuildOk": true
+  }
+}

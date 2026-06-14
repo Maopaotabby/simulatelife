@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-phase5-live-state-views-20260614";
+  var APP_PATCH_VERSION = "v2-state-closure-recall-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -2047,6 +2047,44 @@
     }).join("\n");
   }
 
+  function summarizePromptEntry(entry){
+    if (!isObject(entry)) return trimText(entry);
+    var name = trimText(entry.title || entry.name || entry.npcName || entry.npcId || entry.id || "未命名");
+    var summary = trimText(entry.summary || entry.detail || entry.text || entry.description);
+    var extra = [];
+    if (entry.type) extra.push("type:" + trimText(entry.type));
+    if (entry.status) extra.push("status:" + trimText(entry.status));
+    if (entry.visibility) extra.push("visibility:" + trimText(entry.visibility));
+    if (entry.truth) extra.push("truth:" + trimText(entry.truth));
+    if (entry.sourceEventId) extra.push("source:" + trimText(entry.sourceEventId));
+    if (Array.isArray(entry.unresolvedThreads) && entry.unresolvedThreads.length) {
+      extra.push("threads:" + entry.unresolvedThreads.map(trimText).filter(Boolean).slice(-3).join(" / "));
+    }
+    return [name, extra.join(" "), summary ? "summary:" + truncateText(summary, 240) : ""].filter(Boolean).join(" | ");
+  }
+
+  function summarizePromptEntryList(entries, limit){
+    var list = ensureArray(entries).filter(Boolean).slice(-(limit || 6));
+    if (!list.length) return "无";
+    return list.map(summarizePromptEntry).filter(Boolean).join("\n") || "无";
+  }
+
+  function buildPersistentStateRecallBlock(player, eventContext, retrieval){
+    var normalized = normalizeContextPlayer(player || {}, eventContext);
+    var selectedLore = ensureArray(retrieval && retrieval.selected).map(function(item){ return item && item.entry; }).filter(Boolean);
+    return [
+      "[PERSISTENT_STATE_RECALL]",
+      "openThreads:",
+      summarizePromptEntryList(normalized.openThreads, 6),
+      "relationshipStates:",
+      summarizePromptEntryList(normalized.relationshipStates, 6),
+      "sceneMemoryArchive:",
+      summarizePromptEntryList(normalized.sceneMemoryArchive, 4),
+      "matchedLoreEntries:",
+      summarizePromptEntryList(selectedLore, 5)
+    ].join("\n");
+  }
+
   function buildSearchText(player, eventContext){
     var normalized = player || {};
     var parts = [
@@ -2556,6 +2594,8 @@
       "[SHORT_TERM_SCENE_MEMORY]",
       formatSceneMemory(normalized.shortTermSceneMemory),
       "",
+      buildPersistentStateRecallBlock(normalized, eventContext, retrieval),
+      "",
       formatLoreBlocks(retrieval),
       "",
       formatNpcCards(normalized),
@@ -2635,6 +2675,8 @@
       "",
       "[SHORT_TERM_SCENE_MEMORY]",
       formatCompactMainTaskSceneMemory(normalized.shortTermSceneMemory),
+      "",
+      buildPersistentStateRecallBlock(normalized, eventContext, retrieval),
       "",
       formatLoreBlocks(retrieval),
       "",
@@ -2827,6 +2869,9 @@
         "资源摘要：" + truncateText(summaries.resourceSummary, 700),
         "秘密摘要：" + truncateText(summaries.secretSummary, 700),
         "开放线索：" + truncateText(summaries.openThreads, 700),
+        "开放线索模块：" + summarizePromptEntryList(normalized.openThreads, 6),
+        "关系认知模块：" + summarizePromptEntryList(normalized.relationshipStates, 6),
+        "长期场景归档：" + summarizePromptEntryList(normalized.sceneMemoryArchive, 4),
         "近期连续性提醒：" + truncateText(summaries.recentContinuityNotes, 700)
       ].join("\n"),
       moduleContext: [
@@ -2970,6 +3015,7 @@
     var policy = getGranularityPolicy(settings.granularityPreset);
     var scene = normalizeSceneState(normalized.sceneState);
     var transitionWarning = getGranularityTransitionWarning(settings.lastGranularity, settings.granularityPreset, settings, scene);
+    var retrieval = retrieveLoreEntries(normalized, eventContext || {});
     var inlineTimeContext = normalized.pendingInlineTimeJumpContext || getRecentInlineTimeJumpContext();
     return [
       "【Phase 5 任务代理紧凑上下文】",
@@ -3014,6 +3060,8 @@
       "",
       "[SHORT_TERM_SCENE_MEMORY]",
       formatCompactMainTaskSceneMemory(normalized.shortTermSceneMemory),
+      "",
+      buildPersistentStateRecallBlock(normalized, eventContext, retrieval),
       "",
       "[TASK_AGENT_CONTEXT_BUDGET]",
       "budget_rule = 本块只供 PLANNER / DESIGNER / ARBITER 使用；任务代理根据当前日期、长期摘要、最近正式事件、场景框架和输出合同完成关键词、选项或判定，不展开完整 Lore/NPC 卡片。",
@@ -3121,6 +3169,9 @@
       "资源摘要：" + truncateText(summaries.resourceSummary, 260),
       "秘密摘要：" + truncateText(summaries.secretSummary, 320),
       "开放线索：" + truncateText(summaries.openThreads, 320),
+      "开放线索模块：" + summarizePromptEntryList(normalized.openThreads, 4),
+      "关系认知模块：" + summarizePromptEntryList(normalized.relationshipStates, 4),
+      "长期场景归档：" + summarizePromptEntryList(normalized.sceneMemoryArchive, 3),
       "近期连续性提醒：" + truncateText(summaries.recentContinuityNotes, 320),
       "",
       "【状态模块索引】",
