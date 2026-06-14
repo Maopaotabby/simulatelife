@@ -134,4 +134,22 @@ $env:NODE_PATH='C:\Users\15164\.cache\codex-runtimes\codex-primary-runtime\depen
 
 ## 发布状态
 
-待发布到 GitHub Pages 后补充线上验证结果。
+已发布到 GitHub Pages。
+
+提交：
+
+- `81c869d Fix edited story authority settlement`
+
+线上验证：
+
+- raw GitHub `index.html` 已包含 `20260614-v2-edit-authority-a`。
+- raw GitHub `assets/a-site-v2-runtime.js` 已包含 `v2-edit-authority-20260614`。
+- Pages `https://maopaotabby.github.io/simulatelife/index.html` 已包含 `20260614-v2-edit-authority-a`。
+- Pages `https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js` 已包含 `v2-edit-authority-20260614`。
+- 移动端视口加载 Pages 后，`window.__ASiteV2.version` 和 `document.documentElement.dataset` 均为 `v2-edit-authority-20260614`。
+- 移动端视口检测到 `storyEventHasUserEditAuthority`、`canonicalizeUserEditedStoryEvent`、`renderEditedStoryAuthorityWarning` 均已暴露。
+
+证据：
+
+- `reports/phase5_full_acceptance_evidence/pages_mobile_edit_authority_verification_20260614.json`
+- 本地截图：`output/playwright/pages_mobile_edit_authority_20260614.png`（未提交到仓库）

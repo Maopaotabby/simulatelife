@@ -1,0 +1,16 @@
+{
+  "url": "https://maopaotabby.github.io/simulatelife/index.html?pages_mobile_edit_authority=1781408446275",
+  "title": "AI人生引擎",
+  "runtimeVersion": "v2-edit-authority-20260614",
+  "htmlRuntimeVersion": "v2-edit-authority-20260614",
+  "scripts": [
+    "https://cdn.tailwindcss.com/",
+    "https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-edit-authority-a",
+    "https://maopaotabby.github.io/simulatelife/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+  ],
+  "hasEditAuthorityApi": true,
+  "viewportWidth": 390,
+  "viewportHeight": 844,
+  "ok": true,
+  "screenshotPath": "C:\\Users\\15164\\Documents\\林墨的奇妙冒险\\09_tools\\a_site_public_site\\output\\playwright\\pages_mobile_edit_authority_20260614.png"
+}
