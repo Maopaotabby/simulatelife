@@ -277,6 +277,47 @@ A_SITE_URL=https://maopaotabby.github.io/simulatelife/index.html node reports/ru
 - `reports/phase5_full_acceptance_evidence/v2_state_closure_regression_results.json` 中脚本来源已变为 `https://maopaotabby.github.io/simulatelife/...`
 - Pages 包上的 `interceptLegacyAccept -> runPostAcceptanceExtraction -> applyAcceptedEventSettlement -> saveProfile -> getLatestProfile -> next prompt` 仍通过
 
+## Completion Audit
+
+当前远端：
+
+```text
+HEAD = origin/main = 0b59b656524c6ca904fd9e4cd1ce0b860a9aa837
+```
+
+已由当前证据证明：
+
+- Pages 最新包已加载新 runtime query。
+- Pages runtime 包含 `v2-state-closure-recall-20260614`。
+- Pages runtime 包含 `[PERSISTENT_STATE_RECALL]`。
+- `node --check` 通过：
+  - `reports/run_v2_state_closure_regression.js`
+  - `reports/validate_v2_closure_export.js`
+- stubbed Pages 移动视口闭环通过，证据在 `reports/phase5_full_acceptance_evidence/v2_state_closure_regression_results.json`：
+  - `history = 1`
+  - `canonHistory = 1`
+  - `eventCount = 1`
+  - `attributes` 通过旧 `statChanges` 更新，`精神 = 51`
+  - `tags` 包含 `行政口径建立`
+  - `npcs` 包含 `Emma / 加菲 / 阿哲 / 柜台办事员`
+  - `goals` 完成 `拿到校园卡`，新增 `完成学生系统绑定`
+  - `npcProfiles` 包含上述 NPC
+  - `relationshipStates` 包含上述 NPC 且无“未命名认知”
+  - `openThreads / loreEntries / sceneMemoryArchive / shortTermSceneMemory` 均有写入
+  - 保存后重读仍保留 `history / canonHistory / npcProfiles / loreEntries / sceneMemoryArchive`
+  - 下一轮 `STORYTELLER` prompt 读到 Emma、matched lore、open thread
+  - 下一轮 `PLANNER` prompt 读到 matched lore、open thread、scene archive
+- 旧 6/14 full 存档可 normalize，prompt 构造包含 `[PERSISTENT_STATE_RECALL]`，且不会再出现“未命名认知”。
+- 已提供导出存档只读验收脚本 `reports/validate_v2_closure_export.js`，用于真实事件导出后的 baseline/after 对比。
+
+仍未由当前证据证明：
+
+- 真实页面使用用户配置 API 完成一轮普通事件生成。
+- 真实页面中完成概率判定、正文确认和“接受命运并成长”点击。
+- 真实 API 事件接受后导出的正式存档通过 `validate_v2_closure_export.js --baseline --strict-deltas`。
+- 导出的正式存档重新导入后，状态仍存在。
+- 实体手机端在最新 Pages 包上完成同一流程。
+
 ## Remaining Risk
 
 本轮浏览器回归使用 stubbed DATA / ARCHIVIST，证明 runtime 闭环、Pages 包加载和 prompt 读取已通，但还没有用真实外部 API 重新生成一轮新普通事件并导出正式存档。
