@@ -11,6 +11,7 @@
 - `assets/a-site-v2-runtime.js`
 - `index.html`
 - `reports/run_v2_state_closure_regression.js`
+- `reports/validate_v2_closure_export.js`
 
 ## Old Logic Baseline
 
@@ -27,6 +28,35 @@
 
 - `reports/A_site_v2_phase5_legacy_state_settlement_report.md`
 - `reports/A_site_v2_state_compat_repair_report_20260614.md`
+
+代码证据：
+
+- 原站主包 `assets/index-B7-XkV0u.js` 的 `STORYTELLER_DATA` 输出合同仍包含 `statChanges / newTags / removedTags / newNPCs / updatedNPCs / modifyGoals / achievedGoals`。
+- 原站主包中接受结果摘要组件读取 `statChanges / newTags / removedTags / inspirationGained / achievedGoals`，说明这些字段是基础闭环的显式结果面。
+- 原站主包中旧结算函数仍存在：
+  - `$ne()` 处理 `modifyGoals / achievedGoals -> goals`
+  - `Bne()` 处理 `newTags / removedTags -> tags`
+  - `Une()` 处理 `newNPCs / updatedNPCs -> npcs`
+  - `Lne()` 构造写入 `history` 的事件文本、判定结果和 `statChanges`
+  - `qne()` 处理激励点增量
+- V2 runtime 的兼容层把旧 schema 接回 `StateDiff.proposedPatches`：
+  - `buildDiffFromAgent()`：`statChanges -> attributes`，`newTags -> tags`，`newNPCs -> npcs`，`modifyGoals / achievedGoals -> goals`
+  - `buildStoryEventFromLegacy()`：接受事件对象中的旧字段直接生成自动结算 patch
+  - `applyProposedPatch()`：按模块实际写回 `attributes / tags / npcs / goals`
+  - `applyConfirmedStateDiff()`：应用 patches、NPC beliefs、时间建议，并写入 `stateDiffHistory / patchHistory`
+- V2 runtime 的接受链锚点：
+  - `interceptLegacyAccept()`
+  - `acceptStoryText()`
+  - `runPostAcceptanceExtraction()`
+  - `settleAcceptedStoryEventWithLegacyState()`
+  - `applyAcceptedEventSettlement()`
+
+历史提交证据：
+
+- `8782930 Restore legacy state settlement on accept`：把普通接受链重新接回旧状态结算。
+- `c84049b Repair V2 state patch compatibility`：修复旧 DATA schema、goals patch、NPC belief 兼容。
+- `bdab1ed Repair V2 post-accept state extraction`：修复接受后 `STORYTELLER_DATA / ARCHIVIST` 抽取和 text-only fallback。
+- `6bae549 Restore V2 state recall in event prompts`：本轮把已落盘 V2 状态召回到下一轮 prompt。
 
 ## Current Breakpoints Found
 
@@ -57,6 +87,14 @@
 - `buildDiffFromAgent()` 已兼容旧 DATA schema
 
 本轮新发现的剩余断点是：部分 V2 状态已经能落盘，但下一轮主生成 prompt 对 `openThreads / relationshipStates / sceneMemoryArchive / matched loreEntries` 的读取不稳定，尤其任务代理紧凑上下文容易看不到这些状态。
+
+断点按层级拆分：
+
+- 基础闭环层：如果 `STORYTELLER_DATA` 只返回文本或只返回未转 patch 的 facts/beliefs，旧字段不会自然驱动 `attributes / tags / npcs / goals`。
+- 兼容解析层：旧存档曾出现 `npc:"Emma"` 但 `npcName:""`，导致关系认知写成空名。
+- 接受结算层：`TEXT_ACCEPTANCE_ONLY` 与 `accepted_event_no_state_diff_fallback` 能保住正文，但不能证明状态闭环完成。
+- V2 状态层：`npcProfiles / relationshipStates / loreEntries / sceneMemoryArchive` 即使落盘，如果下一轮 prompt 没读到，功能仍然是静态展示。
+- 导出验收层：只有导出后的 JSON 和重新导入后的 profile 同时保留状态，才能证明不是内存态成功。
 
 ## Fix Applied
 
@@ -186,12 +224,16 @@ node reports/validate_v2_closure_export.js --save <after-export.json> --baseline
 
 ```text
 6bae549 Restore V2 state recall in event prompts
+211a785 Record V2 state recall Pages verification
+3c2e8c2 Add V2 closure export validator
 ```
 
 推送：
 
 ```text
 origin/main bc38e6d..6bae549
+origin/main 6bae549..211a785
+origin/main 211a785..3c2e8c2
 ```
 
 Raw GitHub 验证：
