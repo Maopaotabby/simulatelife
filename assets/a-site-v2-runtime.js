@@ -4,7 +4,7 @@
   var DB_NAME = "ai_life_engine_db";
   var DB_VERSION = 3;
   var SCHEMA_VERSION = "2.4.0";
-  var APP_PATCH_VERSION = "v2-state-closure-recall-20260614";
+  var APP_PATCH_VERSION = "v2-state-closure-archive-20260614";
   var DAY_MS = 24 * 60 * 60 * 1000;
   var PENDING_DIFFS_KEY = "a_site_v2_pending_state_diffs";
   var PENDING_TEXT_EVENTS_KEY = "a_site_v2_pending_text_events";
@@ -7534,6 +7534,80 @@
     return diff;
   }
 
+  function collectAcceptedSceneMemoryPatchData(patch){
+    var value = attachPatchSource(patch && patch.value, patch || {});
+    var source = isObject(value) ? value : {};
+    var notes = ensureArray(source.notes).map(function(note){
+      return trimText(isObject(note) ? note.summary || note.text || note.detail : note);
+    }).filter(Boolean);
+    var lastActions = ensureArray(source.lastActions).map(trimText).filter(Boolean);
+    var unresolvedThreads = ensureArray(source.unresolvedThreads).map(trimText).filter(Boolean);
+    return {
+      notes: notes,
+      lastActions: lastActions,
+      unresolvedThreads: unresolvedThreads,
+      sourceEventId: trimText(source.sourceEventId)
+    };
+  }
+
+  function buildAcceptedSceneArchivePatch(player, stateDiff){
+    var sourceEventId = trimText(stateDiff && stateDiff.sourceEventId);
+    if (!sourceEventId) return null;
+    var selectedPatches = ensureArray(stateDiff && stateDiff.proposedPatches).filter(function(patch){ return patch && patch.selected !== false; });
+    if (selectedPatches.some(function(patch){ return trimText(patch.module || patch.path) === "sceneMemoryArchive"; })) return null;
+    var memoryPatches = selectedPatches.filter(function(patch){ return trimText(patch.module || patch.path) === "shortTermSceneMemory"; });
+    var notes = [];
+    var lastActions = [];
+    var unresolvedThreads = [];
+    memoryPatches.forEach(function(patch){
+      var data = collectAcceptedSceneMemoryPatchData(Object.assign({}, patch, {sourceEventId: sourceEventId}));
+      notes = notes.concat(data.notes);
+      lastActions = lastActions.concat(data.lastActions);
+      unresolvedThreads = unresolvedThreads.concat(data.unresolvedThreads);
+    });
+    if (!notes.length) {
+      var currentMemory = normalizeShortTermSceneMemory(player && player.shortTermSceneMemory, player && player.sceneState);
+      var memorySourceMatches = trimText(currentMemory.sourceEventId) === sourceEventId;
+      var matchingNotes = ensureArray(currentMemory.notes).filter(function(note){
+        return memorySourceMatches || trimText(note.sourceEventId) === sourceEventId;
+      });
+      notes = matchingNotes.map(function(note){ return trimText(note.summary); }).filter(Boolean);
+      if (memorySourceMatches || matchingNotes.length) {
+        lastActions = ensureArray(currentMemory.lastActions).map(trimText).filter(Boolean);
+        unresolvedThreads = ensureArray(currentMemory.unresolvedThreads).map(trimText).filter(Boolean);
+      }
+    }
+    if (!notes.length) {
+      var sourceEvent = findEventById(player, sourceEventId) || stateDiff && stateDiff.sourceStoryEvent;
+      var storySummary = summarizeStoryForScene(pickStoryText(sourceEvent) || sourceEvent && (sourceEvent.storytellerText || sourceEvent.text || sourceEvent.story));
+      if (storySummary) notes.push(storySummary);
+    }
+    notes = notes.map(trimText).filter(Boolean).filter(function(note, index, array){ return array.indexOf(note) === index; }).slice(-8);
+    if (!notes.length) return null;
+    var scene = normalizeSceneState(player && player.sceneState);
+    var summary = truncateText(notes.join(" / "), 900);
+    var archivedAt = new Date().toISOString();
+    return {
+      module: "sceneMemoryArchive",
+      operation: "add",
+      path: "sceneMemoryArchive",
+      value: {
+        id: makeId("scene_archive"),
+        sceneId: scene.sceneId,
+        summary: summary,
+        lastActions: lastActions.slice(-8),
+        unresolvedThreads: unresolvedThreads.slice(-8),
+        sourceEventId: sourceEventId,
+        reason: "accepted_event_settlement",
+        archivedAt: archivedAt
+      },
+      reason: "接受事件已写入正史，归档本次短期场景记忆，供后续 prompt 召回。",
+      confidence: "confirmed",
+      selected: true,
+      sourceEventId: sourceEventId
+    };
+  }
+
   function applyFactAsPatch(player, fact, sourceEventId){
     var target = trimText(fact.targetModule || "structuredSummaries");
     if (target === "authorOnlySetting") {
@@ -7798,6 +7872,8 @@
     selected.confirmedFacts.forEach(function(fact){ next = applyFactWithHistory(next, fact, sourceEventId, selected); });
     selected.speculations.forEach(function(speculation){ next = applySpeculationWithHistory(next, speculation, sourceEventId, selected); });
     selected.npcBeliefs.forEach(function(belief){ next = applyNpcBeliefWithHistory(next, belief, sourceEventId, selected); });
+    var acceptedSceneArchivePatch = buildAcceptedSceneArchivePatch(next, selected);
+    if (acceptedSceneArchivePatch) selected.proposedPatches = selected.proposedPatches.concat([acceptedSceneArchivePatch]);
     selected.proposedPatches.forEach(function(patch){
       next = applyProposedPatchWithHistory(next, Object.assign({}, patch, {sourceEventId: sourceEventId || patch.sourceEventId}), selected);
     });

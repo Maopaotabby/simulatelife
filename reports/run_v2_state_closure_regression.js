@@ -161,7 +161,6 @@ async function main() {
         { module: "goals", operation: "update", value: { modifyGoals: { add: [{ type: "shortTerm", text: "完成学生系统绑定" }], achieve: ["拿到校园卡"] }, achievedGoals: [] }, reason: "校园卡领取已完成，并出现下一步手续目标。", confidence: "confirmed" },
         { module: "npcProfiles", operation: "update", value: [{ id: "Emma", name: "Emma", attitude: "担心但尊重林墨的解释", recentInteractions: [{ summary: "递给林墨一颗牛奶糖。", sourceEventId: "event_accept_stub", weight: 0.7 }] }], reason: "Emma与林墨产生可延续互动。", confidence: "confirmed" },
         { module: "loreEntries", operation: "add", value: [{ id: "lore_admin_card_flow", title: "行政办公室校园卡流程", summary: "林墨在行政办公室领取校园卡，正式进入学生系统日常流程。", keywords: ["行政办公室", "校园卡", "学生系统"], visibility: "protagonist_only", truth: "confirmed", status: "active" }], reason: "已接受事件产生后续可召回流程信息。", confidence: "confirmed" },
-        { module: "sceneMemoryArchive", operation: "add", value: [{ id: "scene_archive_admin_office", sceneId: "scene_admin_office", summary: "Emma递糖，加菲提示饮水机，阿哲担心，办事员给纸巾。", unresolvedThreads: ["同学们会如何记住林墨这次身体不适"], sourceEventId: "event_accept_stub" }], reason: "普通事件接受后形成可复用场景记忆。", confidence: "confirmed" },
         { module: "shortTermSceneMemory", operation: "update", value: { notes: [{ summary: "林墨手里有Emma给的牛奶糖。", sourceEventId: "event_accept_stub", expiresAfterTurns: 3 }], lastActions: ["剥开牛奶糖"], unresolvedThreads: ["Emma还在观察林墨状态"] }, reason: "保留下一轮局部连续性。", confidence: "confirmed" }
       ],
       actualElapsedDaysSuggestion: { days: 0, evidence: "同一行政办公室连续场景。", confidence: "confirmed", selected: true }
@@ -276,7 +275,7 @@ async function main() {
         storytellerContextHasOpenThread: String(storytellerContext).includes("Emma可能会继续留意"),
         plannerContextHasLore: String(plannerContext).includes("行政办公室校园卡流程"),
         plannerContextHasOpenThread: String(plannerContext).includes("Emma可能会继续留意"),
-        plannerContextHasSceneArchive: String(plannerContext).includes("Emma递糖，加菲提示饮水机"),
+        plannerContextHasSceneArchive: String(plannerContext).includes("林墨手里有Emma给的牛奶糖"),
         loreSelected: arr(lore && lore.selected).map((item) => item && item.entry && item.entry.title)
       }
     };

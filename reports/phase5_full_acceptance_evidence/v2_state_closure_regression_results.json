@@ -1,10 +1,10 @@
 {
   "ok": true,
-  "runtimeVersion": "v2-state-closure-recall-20260614",
+  "runtimeVersion": "v2-state-closure-archive-20260614",
   "scripts": [
     "https://cdn.tailwindcss.com/",
-    "https://maopaotabby.github.io/simulatelife/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-recall-a",
-    "https://maopaotabby.github.io/simulatelife/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
+    "http://127.0.0.1:8765/assets/a-site-v2-runtime.js?v=20260614-v2-state-closure-archive-a",
+    "http://127.0.0.1:8765/assets/index-B7-XkV0u.js?v=20260610-result-chain-flow-f"
   ],
   "beliefOnly": {
     "npcNames": [
@@ -93,14 +93,14 @@
           "summary": "递给林墨一颗牛奶糖。",
           "sourceEventId": "event_accept_stub",
           "weight": 0.7,
-          "id": "interaction_mqd56wtc_luo7zy",
+          "id": "interaction_mqd68yar_klx23t",
           "pinned": false,
-          "createdAt": "2026-06-14T02:05:31.680Z"
+          "createdAt": "2026-06-14T02:35:06.531Z"
         }
       ],
       "visibility": "limited_public",
       "confidence": "confirmed",
-      "lastUpdated": "2026-06-14T02:05:31.680Z"
+      "lastUpdated": "2026-06-14T02:35:06.531Z"
     },
     "relationshipNames": [
       "Emma",
@@ -115,7 +115,7 @@
       "行政办公室校园卡流程"
     ],
     "sceneMemoryArchive": [
-      "Emma递糖，加菲提示饮水机，阿哲担心，办事员给纸巾。"
+      "林墨手里有Emma给的牛奶糖。"
     ],
     "shortTermNotes": [
       "林墨手里有Emma给的牛奶糖。"
@@ -147,9 +147,9 @@
       "goals",
       "npcProfiles",
       "loreEntries",
-      "sceneMemoryArchive",
       "shortTermSceneMemory",
-      "attributes"
+      "attributes",
+      "sceneMemoryArchive"
     ],
     "pendingAcceptedEvents": 0,
     "pendingStateDiffs": 0,
@@ -166,7 +166,7 @@
       "行政办公室校园卡流程"
     ],
     "persistedSceneMemoryArchive": [
-      "Emma递糖，加菲提示饮水机，阿哲担心，办事员给纸巾。"
+      "林墨手里有Emma给的牛奶糖。"
     ],
     "storytellerContextHasEmma": true,
     "storytellerContextHasLore": true,
